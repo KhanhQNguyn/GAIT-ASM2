@@ -201,6 +201,21 @@ class TerrainGrid:
     def cell_to_world_center(self, col: int, row: int) -> tuple[float, float]:
         return col * TILE_SIZE + TILE_SIZE / 2.0, row * TILE_SIZE + TILE_SIZE / 2.0
 
+    def _compose_overlay(self, terrain_alpha_pairs):
+        if not terrain_alpha_pairs:
+            return None
+        total_alpha = sum(a for _, a in terrain_alpha_pairs)
+        scale = 1.0
+        if total_alpha > 150:
+            scale = 150.0 / total_alpha
+
+        surf = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
+        for color, alpha in terrain_alpha_pairs:
+            layer = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
+            layer.fill((*color, int(alpha * scale)))
+            surf.blit(layer, (0, 0))
+        return surf
+
     def draw(
         self,
         surface: pygame.Surface,
@@ -216,16 +231,23 @@ class TerrainGrid:
                 rect = pygame.Rect(cell.col * TILE_SIZE, cell.row * TILE_SIZE, TILE_SIZE, TILE_SIZE)
                 self._draw_base_tile(surface, rect, cell.terrain, terrain_textures.get(cell.terrain))
 
+                layers = []
                 if show_heatmap and cell.terrain != Terrain.WALL:
-                    heat_color = self._heat_color_for_terrain(cell.terrain)
-                    overlay = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
-                    overlay.fill((*heat_color, 72))
-                    surface.blit(overlay, rect.topleft)
+                    layers.append((self._heat_color_for_terrain(cell.terrain), 72))
 
-                if (cell.col, cell.row) in revealed_cells:
-                    overlay = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
-                    overlay.fill((*COLOR_EXPLORED, 72))
-                    surface.blit(overlay, rect.topleft)
+                is_revealed = (cell.col, cell.row) in revealed_cells
+                if is_revealed:
+                    layers.append((COLOR_EXPLORED, 72))
+
+                if show_final_path and cell.in_path:
+                    layers.append((COLOR_PATH, 112))
+
+                if layers:
+                    overlay = self._compose_overlay(layers)
+                    if overlay:
+                        surface.blit(overlay, rect.topleft)
+
+                if is_revealed:
                     pygame.draw.rect(surface, COLOR_FRONTIER, rect, 1)
 
                     if show_cost_labels and cell.g_cost is not None:
@@ -235,11 +257,6 @@ class TerrainGrid:
                         shadow_rect = shadow.get_rect(center=(rect.centerx + 1, rect.centery + 1))
                         surface.blit(shadow, shadow_rect)
                         surface.blit(label, label_rect)
-
-                if show_final_path and cell.in_path:
-                    overlay = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
-                    overlay.fill((*COLOR_PATH, 112))
-                    surface.blit(overlay, rect.topleft)
 
         if show_final_path:
             path_points = [self.cell_to_world_center(col, row) for col, row in self.final_path]

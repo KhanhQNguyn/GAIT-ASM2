@@ -88,17 +88,24 @@ class Frog:
         return self.pos.distance_to(self.path[-1]) <= 0.5
 
     def draw(self, surface) -> None:
+        center = (int(self.pos.x), int(self.pos.y))
+        
+        shadow_surf = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
+        shadow_rect = pygame.Rect(0, 0, int(TILE_SIZE * 0.8), int(TILE_SIZE * 0.5))
+        shadow_rect.center = (TILE_SIZE // 2, TILE_SIZE // 2)
+        pygame.draw.ellipse(shadow_surf, (0, 0, 0, 130), shadow_rect)
+        surface.blit(shadow_surf, (center[0] - TILE_SIZE // 2, center[1] - TILE_SIZE // 2))
+
         if self.sprite is not None:
             angle_key = round(self.angle, 1)
             if self._cached_rotated_sprite is None or self._cached_rotation_angle != angle_key:
                 self._cached_rotated_sprite = pygame.transform.rotate(self.sprite, self.angle)
                 self._cached_rotation_angle = angle_key
             rotated = self._cached_rotated_sprite
-            rect = rotated.get_rect(center=(int(self.pos.x), int(self.pos.y)))
+            rect = rotated.get_rect(center=center)
             surface.blit(rotated, rect)
             return
 
-        center = (int(self.pos.x), int(self.pos.y))
         pygame.draw.circle(surface, (73, 190, 80), center, int(TILE_SIZE * 0.22))
         if self.velocity.length_squared() > 0.0:
             direction = self.velocity.normalize() * (TILE_SIZE * 0.28)

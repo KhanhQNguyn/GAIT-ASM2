@@ -11,6 +11,7 @@ from settings import (
     COLOR_BG,
     COLOR_PANEL_BG,
     COLOR_PANEL_BORDER,
+    COLOR_PATH,
     COLOR_TEXT,
     FONT_SIZE,
     FPS,
@@ -24,6 +25,7 @@ from settings import (
     REVEAL_CELLS_PER_FRAME,
     SCREEN_HEIGHT,
     SCREEN_WIDTH,
+    TERRAIN_COLOR,
     TERRAIN_COST,
     TILE_SIZE,
     WALL_TEXTURE,
@@ -111,6 +113,23 @@ def summarize_path_terrain(grid: TerrainGrid, path: list[tuple[int, int]]) -> di
         if cell.terrain in counts:
             counts[cell.terrain] += 1
     return counts
+
+
+def draw_panel_frame(screen: pygame.Surface, rect: pygame.Rect, bg_color: tuple, border_color: tuple, radius: int = 10):
+    shadow_rect = rect.copy()
+    shadow_rect.x += 3
+    shadow_rect.y += 4
+    shadow_surf = pygame.Surface(shadow_rect.size, pygame.SRCALPHA)
+    pygame.draw.rect(shadow_surf, (0, 0, 0, 80), shadow_surf.get_rect(), border_radius=radius)
+    screen.blit(shadow_surf, shadow_rect.topleft)
+    
+    pygame.draw.rect(screen, bg_color, rect, border_radius=radius)
+    pygame.draw.rect(screen, border_color, rect, 2, border_radius=radius)
+
+
+def draw_terrain_swatch(screen: pygame.Surface, x: int, y: int, terrain: str):
+    swatch_rect = pygame.Rect(x, y + 6, 10, 10)
+    pygame.draw.rect(screen, TERRAIN_COLOR[terrain], swatch_rect)
 
 
 def main() -> int:
@@ -353,6 +372,12 @@ def main() -> int:
         if hud_message:
             lines.insert(0, hud_message)
 
+        # Translucent legend background
+        legend_rect = pygame.Rect(8, y - 4, SCREEN_WIDTH - 16, len(lines) * 22 + 8)
+        legend_bg = pygame.Surface(legend_rect.size, pygame.SRCALPHA)
+        pygame.draw.rect(legend_bg, (*COLOR_PANEL_BG, 170), legend_bg.get_rect(), border_radius=8)
+        screen.blit(legend_bg, legend_rect.topleft)
+
         for line in lines:
             label = font.render(line, True, COLOR_TEXT)
             screen.blit(label, (12, y))
@@ -364,30 +389,58 @@ def main() -> int:
         panel_y = 12
         panel_height = SCREEN_HEIGHT - 24
         panel_rect = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
-        pygame.draw.rect(screen, COLOR_PANEL_BG, panel_rect)
-        pygame.draw.rect(screen, COLOR_PANEL_BORDER, panel_rect, 2)
+        
+        draw_panel_frame(screen, panel_rect, COLOR_PANEL_BG, COLOR_PANEL_BORDER, 10)
 
-        panel_lines = ["PATH COST"]
+        # Header strip
+        header_rect = pygame.Rect(panel_x, panel_y, panel_width, 34)
+        header_surf = pygame.Surface(header_rect.size, pygame.SRCALPHA)
+        pygame.draw.rect(header_surf, (*COLOR_PATH, 100), header_surf.get_rect(), border_radius=10)
+        pygame.draw.rect(header_surf, (*COLOR_PATH, 100), (0, 17, panel_width, 17))
+        screen.blit(header_surf, header_rect.topleft)
+
+        title = font.render("PATH COST", True, (255, 255, 255))
+        screen.blit(title, (panel_x + 10, panel_y + 10))
+
+        text_y = panel_y + 44
         if result is not None and result.reachable and last_path_breakdown:
             terrain_counts = summarize_path_terrain(grid, result.path)
-            panel_lines.append(f"Total: {result.total_cost:.1f}")
-            panel_lines.append(f"Path length: {len(result.path)} cells")
-            panel_lines.append(f"Grass: {terrain_counts[Terrain.GRASS]} cells x {TERRAIN_COST[Terrain.GRASS]}")
-            panel_lines.append(f"Mud:   {terrain_counts[Terrain.MUD]} cells x {TERRAIN_COST[Terrain.MUD]}")
-            panel_lines.append(f"Water: {terrain_counts[Terrain.WATER]} cells x {TERRAIN_COST[Terrain.WATER]}")
-        else:
-            panel_lines.append("Total: --")
-            panel_lines.append("Path length: --")
-            panel_lines.append(f"Grass: -- cells x {TERRAIN_COST[Terrain.GRASS]}")
-            panel_lines.append(f"Mud:   -- cells x {TERRAIN_COST[Terrain.MUD]}")
-            panel_lines.append(f"Water: -- cells x {TERRAIN_COST[Terrain.WATER]}")
-
-        text_y = panel_y + 10
-        for index, panel_line in enumerate(panel_lines):
-            color = (255, 255, 255) if index == 0 else COLOR_TEXT
-            label = font.render(panel_line, True, color)
+            
+            label = font.render(f"Total: {result.total_cost:.1f}", True, COLOR_TEXT)
             screen.blit(label, (panel_x + 10, text_y))
             text_y += 24
+            
+            label = font.render(f"Path length: {len(result.path)} cells", True, COLOR_TEXT)
+            screen.blit(label, (panel_x + 10, text_y))
+            text_y += 32
+
+            for t in (Terrain.GRASS, Terrain.MUD, Terrain.WATER):
+                count = terrain_counts.get(t, 0)
+                draw_terrain_swatch(screen, panel_x + 10, text_y, t)
+                
+                total = len(result.path)
+                bar_width = int((count / total) * (panel_width - 100)) if total > 0 else 0
+                if bar_width > 0:
+                    bar_rect = pygame.Rect(panel_x + 28, text_y + 8, bar_width, 6)
+                    pygame.draw.rect(screen, TERRAIN_COLOR[t], bar_rect, border_radius=3)
+                
+                cost_text = f"{count}x{TERRAIN_COST[t]}={count*TERRAIN_COST[t]}"
+                label = font.render(cost_text, True, COLOR_TEXT)
+                screen.blit(label, (panel_x + 32 + max(bar_width, 10), text_y + 2))
+                text_y += 24
+        else:
+            label = font.render("Total: --", True, COLOR_TEXT)
+            screen.blit(label, (panel_x + 10, text_y))
+            text_y += 24
+            label = font.render("Path length: --", True, COLOR_TEXT)
+            screen.blit(label, (panel_x + 10, text_y))
+            text_y += 32
+            
+            for t in (Terrain.GRASS, Terrain.MUD, Terrain.WATER):
+                draw_terrain_swatch(screen, panel_x + 10, text_y, t)
+                label = font.render(f"-- x {TERRAIN_COST[t]}", True, COLOR_TEXT)
+                screen.blit(label, (panel_x + 28, text_y + 2))
+                text_y += 24
 
         pygame.display.flip()
 
