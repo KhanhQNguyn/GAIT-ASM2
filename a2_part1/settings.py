@@ -49,6 +49,15 @@ MUD_TEXTURE = ASSETS_DIR / "mud.png"
 WATER_TEXTURE = ASSETS_DIR / "water.png"
 WALL_TEXTURE = ASSETS_DIR / "stone.png"
 
+SFX_DIR = ASSETS_DIR / "sfx"
+SFX_PATHS = {
+    "wall_pop": SFX_DIR / "wall_pop.wav",
+    "waypoint_pop": SFX_DIR / "waypoint_pop.wav",
+    "path_found": SFX_DIR / "path_found.wav",
+    "goal_fanfare": SFX_DIR / "goal_fanfare.wav",
+    "invalid": SFX_DIR / "invalid.wav",
+}
+
 REVEAL_CELLS_PER_FRAME = 12
 FONT_SIZE = 20
 

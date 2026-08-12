@@ -9,6 +9,12 @@ import pygame
 from settings import COLOR_EXPLORED, COLOR_FRONTIER, COLOR_PATH, TERRAIN_COLOR, TERRAIN_COST, TILE_SIZE, Terrain
 
 
+def flicker_alpha(elapsed_time: float, base=140, amplitude=100, speed=9.0) -> int:
+    """Oscillating alpha for the 'still deciding' path preview."""
+    value = base + amplitude * math.sin(elapsed_time * speed)
+    return int(max(40, min(255, value)))
+
+
 class Cell:
     __slots__ = ("col", "row", "terrain", "g_cost", "explored", "in_path")
 
@@ -225,6 +231,8 @@ class TerrainGrid:
         show_heatmap: bool,
         show_cost_labels: bool,
         font: pygame.font.Font,
+        is_revealing: bool = False,
+        search_time: float = 0.0,
     ) -> None:
         for row_cells in self.cells:
             for cell in row_cells:
@@ -240,7 +248,9 @@ class TerrainGrid:
                     layers.append((COLOR_EXPLORED, 72))
 
                 if show_final_path and cell.in_path:
-                    layers.append((COLOR_PATH, 112))
+                    layers.append((COLOR_PATH, 255))
+                elif is_revealing and cell.in_path:
+                    layers.append((COLOR_PATH, flicker_alpha(search_time)))
 
                 if layers:
                     overlay = self._compose_overlay(layers)
@@ -258,10 +268,16 @@ class TerrainGrid:
                         surface.blit(shadow, shadow_rect)
                         surface.blit(label, label_rect)
 
-        if show_final_path:
+        if show_final_path or is_revealing:
             path_points = [self.cell_to_world_center(col, row) for col, row in self.final_path]
             if len(path_points) >= 2:
-                pygame.draw.lines(surface, COLOR_PATH, False, path_points, 4)
+                alpha = 255 if show_final_path else flicker_alpha(search_time)
+                if alpha < 255:
+                    line_surf = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+                    pygame.draw.lines(line_surf, (*COLOR_PATH, alpha), False, path_points, 4)
+                    surface.blit(line_surf, (0, 0))
+                else:
+                    pygame.draw.lines(surface, COLOR_PATH, False, path_points, 4)
 
         if self.start_cell is not None:
             self._draw_marker(surface, self.start_cell, (80, 220, 255), 10)

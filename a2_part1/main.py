@@ -7,6 +7,9 @@ import pygame
 from frog import Frog
 from grid import TerrainGrid
 from pathfinding import AStarResult, find_path, path_cost_breakdown
+from effects import Particle, ParticleSystem
+from audio_fx import load_or_synth, SFX_SPEC, synth_tone
+
 from settings import (
     COLOR_BG,
     COLOR_PANEL_BG,
@@ -25,6 +28,7 @@ from settings import (
     REVEAL_CELLS_PER_FRAME,
     SCREEN_HEIGHT,
     SCREEN_WIDTH,
+    SFX_PATHS,
     TERRAIN_COLOR,
     TERRAIN_COST,
     TILE_SIZE,
@@ -37,38 +41,7 @@ import io
 import struct
 import math
 
-def create_wav_sound(freq=440.0, duration=0.1, volume=0.5):
-    if not pygame.mixer.get_init():
-        return None
-    sample_rate = 44100
-    n_samples = int(sample_rate * duration)
-    max_amp = int(32767 * volume)
-    audio_data = bytearray()
-    for i in range(n_samples):
-        env = 1.0
-        if i < 441: env = i / 441.0
-        elif i > n_samples - 441: env = (n_samples - i) / 441.0
-        val = int(max_amp * env * math.sin(2 * math.pi * freq * i / sample_rate))
-        audio_data.extend(struct.pack('<h', val))
-        audio_data.extend(struct.pack('<h', val)) # stereo
-    
-    wav_header = b'RIFF'
-    wav_header += struct.pack('<I', 36 + len(audio_data))
-    wav_header += b'WAVEfmt '
-    wav_header += struct.pack('<I', 16)
-    wav_header += struct.pack('<H', 1)
-    wav_header += struct.pack('<H', 2)
-    wav_header += struct.pack('<I', sample_rate)
-    wav_header += struct.pack('<I', sample_rate * 4)
-    wav_header += struct.pack('<H', 4)
-    wav_header += struct.pack('<H', 16)
-    wav_header += b'data'
-    wav_header += struct.pack('<I', len(audio_data))
-    
-    try:
-        return pygame.mixer.Sound(io.BytesIO(wav_header + audio_data))
-    except:
-        return None
+def IDLE(): pass # placeholder for deleted lines so line numbers don't shift too much (we can just replace with empty string)
 
 
 IDLE = "idle"
@@ -135,16 +108,22 @@ def draw_terrain_swatch(screen: pygame.Surface, x: int, y: int, terrain: str):
 def main() -> int:
     pygame.mixer.pre_init(44100, -16, 2, 512)
     pygame.init()
-    pygame.mixer.init()
+    try:
+        pygame.mixer.init()
+        sounds = {
+            key: load_or_synth(SFX_PATHS[key], **spec)
+            for key, spec in SFX_SPEC.items()
+        }
+    except Exception:
+        class DummySound:
+            def play(self): pass
+        dummy = DummySound()
+        sounds = {key: dummy for key in SFX_SPEC}
+
     screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
     pygame.display.set_caption("A* over a weighted-cost grid")
     clock = pygame.time.Clock()
     font = pygame.font.Font(None, FONT_SIZE)
-
-    sound_step = create_wav_sound(400, 0.05, 0.05)
-    sound_think = create_wav_sound(800, 0.02, 0.02)
-    sound_goal = create_wav_sound(500, 0.3, 0.1)
-    sound_error = create_wav_sound(150, 0.2, 0.1)
 
     frog_sprite = load_surface(FROG_SPRITE)
     terrain_textures = {
@@ -178,9 +157,13 @@ def main() -> int:
     goal_cell: tuple[int, int] | None = None
     last_path_breakdown: list[tuple[tuple[int, int], float, float]] = []
 
-    particles = []
+    particles = ParticleSystem()
     frog_step_dist = 0.0
     think_timer = 0.0
+    search_time = 0.0
+    footstep_timer = 0.0
+    shake_timer = 0.0
+    ambient_timer = 0.0
 
     grid.goal_cell = None
 
@@ -203,6 +186,7 @@ def main() -> int:
         last_path_breakdown = []
         hud_message = ""
         hud_message_time = 0.0
+        search_time = 0.0
 
     def set_message(text: str, duration: float = 1.5) -> None:
         nonlocal hud_message, hud_message_time
@@ -211,7 +195,7 @@ def main() -> int:
 
     def handle_right_click(mouse_pos: tuple[int, int]) -> None:
         nonlocal state, result, reveal_cursor, show_final_path, goal_cell, start_cell
-        nonlocal last_path_breakdown
+        nonlocal last_path_breakdown, search_time
         if state != IDLE:
             return
 
@@ -221,15 +205,15 @@ def main() -> int:
         col, row = grid.world_to_cell(*mouse_pos)
         if not grid.in_bounds(col, row):
             set_message("Target outside the grid")
-            if sound_error: sound_error.play()
+            sounds["invalid"].play()
             return
         if grid.cost(col, row) == float("inf"):
             set_message("Target is a wall")
-            if sound_error: sound_error.play()
+            sounds["invalid"].play()
             return
         if not grid.is_reachable(col, row):
             set_message("Target unreachable from the frog", duration=2.5)
-            if sound_error: sound_error.play()
+            sounds["invalid"].play()
             return
 
         goal_cell = (col, row)
@@ -239,13 +223,16 @@ def main() -> int:
         last_path_breakdown = path_cost_breakdown(grid, result.path)
         reveal_cursor = 0
         show_final_path = False
+        search_time = 0.0
         state = REVEALING
         if not result.reachable:
             set_message("Target unreachable", duration=2.5)
-            if sound_error: sound_error.play()
+            sounds["invalid"].play()
+        else:
+            sounds["path_found"].play()
 
     def handle_left_click(mouse_pos: tuple[int, int]) -> None:
-        nonlocal state, result, reveal_cursor, show_final_path, goal_cell, start_cell, last_path_breakdown
+        nonlocal state, result, reveal_cursor, show_final_path, goal_cell, start_cell, last_path_breakdown, search_time
         col, row = grid.world_to_cell(*mouse_pos)
         if not grid.in_bounds(col, row):
             return
@@ -255,7 +242,7 @@ def main() -> int:
             grid.set_terrain(col, row, Terrain.GRASS)
             grid.set_start_cell(*frog_cell)
             set_message("Cannot place wall on frog", duration=1.8)
-            if sound_error: sound_error.play()
+            sounds["invalid"].play()
             return
 
         cell = grid.get_cell(col, row)
@@ -266,19 +253,24 @@ def main() -> int:
         if not grid.set_terrain(col, row, new_terrain):
             return
 
+        cell_center = grid.cell_to_world_center(col, row)
+        particles.emit_burst(cell_center, color=TERRAIN_COLOR[new_terrain], count=12, speed=110)
+        sounds["wall_pop"].play()
+
         state = IDLE
         result = None
         reveal_cursor = 0
         show_final_path = False
         goal_cell = None
         last_path_breakdown = []
+        search_time = 0.0
         start_cell = frog_cell
         grid.set_start_cell(*start_cell)
         invalidate_current_path(grid, frog)
 
     def update(dt: float) -> None:
         nonlocal state, reveal_cursor, show_final_path, result, hud_message_time, hud_message, start_cell
-        nonlocal frog_step_dist, think_timer
+        nonlocal frog_step_dist, think_timer, search_time, footstep_timer, shake_timer, ambient_timer
 
         if hud_message_time > 0.0:
             hud_message_time = max(0.0, hud_message_time - dt)
@@ -286,17 +278,34 @@ def main() -> int:
                 hud_message = ""
 
         # Update particles
-        for p in particles[:]:
-            p["pos"] += p["vel"] * dt
-            p["life"] -= dt
-            if p["life"] <= 0:
-                particles.remove(p)
+        particles.update(dt)
+        shake_timer = max(0.0, shake_timer - dt)
+
+        if state == IDLE:
+            ambient_timer -= dt
+            if ambient_timer <= 0:
+                ambient_timer = random.uniform(0.3, 0.8)
+                col = random.randint(0, GRID_COLS - 1)
+                row = random.randint(0, GRID_ROWS - 1)
+                cell = grid.get_cell(col, row)
+                if cell:
+                    center = grid.cell_to_world_center(col, row)
+                    offset = (random.uniform(-16, 16), random.uniform(-16, 16))
+                    pos = (center[0] + offset[0], center[1] + offset[1])
+                    if cell.terrain == Terrain.WATER:
+                        particles.particles.append(
+                            Particle(pos, (0, -4), life=random.uniform(0.5, 1.2), color=(140, 200, 255), size=random.uniform(1, 2), gravity=-1, fade=True)
+                        )
+                    elif cell.terrain == Terrain.GRASS and random.random() < 0.2:
+                        particles.particles.append(
+                            Particle(pos, (random.uniform(-2, 2), random.uniform(-2, 2)), life=random.uniform(0.5, 1.5), color=(180, 230, 180), size=random.uniform(1, 2), gravity=0, fade=True)
+                        )
 
         if state == REVEALING and result is not None:
             think_timer += dt
+            search_time += dt
             if think_timer > 0.1:
                 think_timer = 0
-                if sound_think: sound_think.play()
             
             reveal_cursor = min(reveal_cursor + REVEAL_CELLS_PER_FRAME, len(result.explored_order))
             if reveal_cursor >= len(result.explored_order):
@@ -312,45 +321,69 @@ def main() -> int:
         if state == FOLLOWING:
             speed = frog.velocity.length()
             if speed > 10:
-                if random.random() < 0.3:
-                    particles.append({
-                        "pos": pygame.Vector2(frog.pos),
-                        "vel": pygame.Vector2(random.uniform(-20, 20), random.uniform(-20, 20)),
-                        "life": random.uniform(0.2, 0.4),
-                        "color": (150, 200, 150)
-                    })
                 frog_step_dist += speed * dt
-                if frog_step_dist > TILE_SIZE * 0.8:
-                    frog_step_dist -= TILE_SIZE * 0.8
-                    if sound_step: sound_step.play()
+                
+                footstep_timer -= dt
+                if footstep_timer <= 0:
+                    footstep_timer = 0.18
+                    frog_col, frog_row = grid.world_to_cell(frog.pos.x, frog.pos.y)
+                    frog_cell = grid.get_cell(frog_col, frog_row)
+                    t = frog_cell.terrain if frog_cell else Terrain.GRASS
+                    freq = 220.0 if t == Terrain.GRASS else (120.0 if t == Terrain.MUD else 180.0)
+                    try:
+                        step_snd = synth_tone(frequency=freq, duration=0.04, volume=0.15, wave="sine")
+                        step_snd.play()
+                    except Exception:
+                        pass
+                
+                frog_col, frog_row = grid.world_to_cell(frog.pos.x, frog.pos.y)
+                frog_cell = grid.get_cell(frog_col, frog_row)
+                if frog_cell:
+                    t = frog_cell.terrain
+                    if t == Terrain.GRASS:
+                        particles.emit_trail(frog.pos, color=(180, 230, 180))
+                    elif t == Terrain.MUD:
+                        for _ in range(1):
+                            vel = (random.uniform(-8, 8), random.uniform(-8, 8))
+                            particles.particles.append(
+                                Particle(frog.pos, vel, life=random.uniform(0.3, 0.5), color=TERRAIN_COLOR[t], size=random.uniform(3, 6), gravity=3)
+                            )
+                    elif t == Terrain.WATER:
+                        particles.emit_terrain_splash(frog.pos, terrain_color=TERRAIN_COLOR[t], count=1)
 
-            frog.follow_path(dt)
+            was_complete = frog.is_path_complete()
+            advanced_waypoint = frog.follow_path(dt)
+            if advanced_waypoint:
+                particles.emit_burst(frog.pos, color=COLOR_PATH, count=10, speed=90)
+                sounds["waypoint_pop"].play()
+
             if frog.is_path_complete():
                 start_cell = grid.world_to_cell(frog.pos.x, frog.pos.y)
                 grid.set_start_cell(*start_cell)
                 state = IDLE
                 frog_step_dist = 0
-                if sound_goal: sound_goal.play()
-                for _ in range(15):
-                    particles.append({
-                        "pos": pygame.Vector2(frog.pos),
-                        "vel": pygame.Vector2(random.uniform(-80, 80), random.uniform(-80, 80)),
-                        "life": random.uniform(0.3, 0.6),
-                        "color": (255, 215, 0)
-                    })
+                if not was_complete:
+                    shake_timer = 0.15
+                    sounds["goal_fanfare"].play()
+                    particles.emit_burst(frog.pos, color=(255, 255, 255), count=26, speed=180)
+                    frog_col, frog_row = grid.world_to_cell(frog.pos.x, frog.pos.y)
+                    frog_cell = grid.get_cell(frog_col, frog_row)
+                    if frog_cell:
+                        particles.emit_terrain_splash(frog.pos, terrain_color=TERRAIN_COLOR[frog_cell.terrain], count=8)
 
     def draw() -> None:
         screen.fill(COLOR_BG)
         revealed_cells = set(result.explored_order[:reveal_cursor]) if result is not None else set()
-        grid.draw(screen, terrain_textures, revealed_cells, show_final_path, show_heatmap, show_cost_labels, font)
-        frog.draw(screen)
+        
+        is_revealing = (state == REVEALING)
+        grid.draw(screen, terrain_textures, revealed_cells, show_final_path, show_heatmap, show_cost_labels, font, is_revealing, search_time)
+        
+        particles.draw(screen)
 
-        # Draw particles
-        for p in particles:
-            alpha = int(255 * max(0, p["life"] / 0.6))
-            surf = pygame.Surface((6, 6), pygame.SRCALPHA)
-            pygame.draw.circle(surf, (*p["color"], alpha), (3, 3), 3)
-            screen.blit(surf, (int(p["pos"].x - 3), int(p["pos"].y - 3)))
+        offset_y = 0.0
+        if state == REVEALING:
+            offset_y = math.sin(search_time * 6) * 2
+        frog.draw(screen, offset_y)
 
         if state == REVEALING:
             blink = int((pygame.time.get_ticks() / 150) % 2)
@@ -375,7 +408,17 @@ def main() -> int:
         # Translucent legend background
         legend_rect = pygame.Rect(8, y - 4, SCREEN_WIDTH - 16, len(lines) * 22 + 8)
         legend_bg = pygame.Surface(legend_rect.size, pygame.SRCALPHA)
+        border_color = COLOR_PANEL_BORDER
+        if hud_message and any(w in hud_message.lower() for w in ["unreachable", "wall", "outside"]):
+            t = pygame.time.get_ticks() / 200.0
+            interp = (math.sin(t) + 1.0) / 2.0
+            border_color = (
+                int(COLOR_TEXT[0] * interp + 255 * (1 - interp)),
+                int(COLOR_TEXT[1] * interp + 191 * (1 - interp)),
+                int(COLOR_TEXT[2] * interp + 0 * (1 - interp))
+            )
         pygame.draw.rect(legend_bg, (*COLOR_PANEL_BG, 170), legend_bg.get_rect(), border_radius=8)
+        pygame.draw.rect(legend_bg, (*border_color, 255), legend_bg.get_rect(), width=2, border_radius=8)
         screen.blit(legend_bg, legend_rect.topleft)
 
         for line in lines:
@@ -441,6 +484,14 @@ def main() -> int:
                 label = font.render(f"-- x {TERRAIN_COST[t]}", True, COLOR_TEXT)
                 screen.blit(label, (panel_x + 28, text_y + 2))
                 text_y += 24
+
+        if shake_timer > 0.0:
+            intensity = int(shake_timer * 10)
+            if intensity > 0:
+                dx, dy = random.randint(-intensity, intensity), random.randint(-intensity, intensity)
+                temp = screen.copy()
+                screen.fill((0, 0, 0))
+                screen.blit(temp, (dx, dy))
 
         pygame.display.flip()
 
