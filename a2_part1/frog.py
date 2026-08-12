@@ -16,6 +16,8 @@ class Frog:
         self.path_index = 0
         self.angle = 0.0
         self.sprite = self._load_sprite(sprite_path)
+        self._cached_rotated_sprite = self.sprite
+        self._cached_rotation_angle = None
 
     def _load_sprite(self, sprite_path):
         if sprite_path is None:
@@ -87,7 +89,11 @@ class Frog:
 
     def draw(self, surface) -> None:
         if self.sprite is not None:
-            rotated = pygame.transform.rotate(self.sprite, self.angle)
+            angle_key = round(self.angle, 1)
+            if self._cached_rotated_sprite is None or self._cached_rotation_angle != angle_key:
+                self._cached_rotated_sprite = pygame.transform.rotate(self.sprite, self.angle)
+                self._cached_rotation_angle = angle_key
+            rotated = self._cached_rotated_sprite
             rect = rotated.get_rect(center=(int(self.pos.x), int(self.pos.y)))
             surface.blit(rotated, rect)
             return

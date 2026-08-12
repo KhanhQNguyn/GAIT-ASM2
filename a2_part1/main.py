@@ -288,7 +288,7 @@ def main() -> int:
 
     running = True
     while running:
-        dt = clock.tick(FPS) / 1000.0
+        dt = clock.tick(FPS) / 1500.0
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False

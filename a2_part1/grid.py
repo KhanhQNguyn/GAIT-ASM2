@@ -28,6 +28,7 @@ class TerrainGrid:
         self.start_cell: tuple[int, int] | None = None
         self.goal_cell: tuple[int, int] | None = None
         self.final_path: list[tuple[int, int]] = []
+        self._scaled_texture_cache: dict[tuple[int, str], pygame.Surface] = {}
         self._reachable: set[tuple[int, int]] = set()
         self._rng = random.Random(seed)
         self.cells = self._build_cells(layout)
@@ -259,7 +260,11 @@ class TerrainGrid:
     ) -> None:
         if terrain_texture is not None:
             try:
-                scaled = pygame.transform.smoothscale(terrain_texture, (TILE_SIZE, TILE_SIZE))
+                cache_key = (id(terrain_texture), terrain)
+                scaled = self._scaled_texture_cache.get(cache_key)
+                if scaled is None:
+                    scaled = pygame.transform.smoothscale(terrain_texture, (TILE_SIZE, TILE_SIZE))
+                    self._scaled_texture_cache[cache_key] = scaled
                 surface.blit(scaled, rect.topleft)
                 return
             except pygame.error:
