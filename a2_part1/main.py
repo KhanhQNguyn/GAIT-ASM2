@@ -1,23 +1,33 @@
 from __future__ import annotations
 
+import random
+
 import pygame
 
 from frog import Frog
 from grid import TerrainGrid
-from pathfinding import AStarResult, find_path
+from pathfinding import AStarResult, find_path, path_cost_breakdown
 from settings import (
     COLOR_BG,
+    COLOR_PANEL_BG,
+    COLOR_PANEL_BORDER,
     COLOR_TEXT,
     FONT_SIZE,
     FPS,
     FROG_SPRITE,
+    GRASS_TEXTURE,
     GRID_COLS,
     GRID_ROWS,
     KEYBINDS,
+    MUD_TEXTURE,
     REVEAL_CELLS_PER_FRAME,
     SCREEN_HEIGHT,
     SCREEN_WIDTH,
-    TILESET,
+    TERRAIN_COST,
+    TILE_SIZE,
+    WALL_TEXTURE,
+    WATER_TEXTURE,
+    Terrain,
 )
 
 
@@ -26,44 +36,8 @@ REVEALING = "revealing"
 FOLLOWING = "following"
 
 
-def build_demo_layout() -> list[str]:
-    rows = [["." for _ in range(GRID_COLS)] for _ in range(GRID_ROWS)]
-
-    for row_index in range(1, 4):
-        for col_index in range(2, 6):
-            rows[row_index][col_index] = "m"
-
-    for row_index in range(8, 12):
-        for col_index in range(12, 17):
-            rows[row_index][col_index] = "m"
-
-    for row_index in range(4, 7):
-        for col_index in range(7, 14):
-            rows[row_index][col_index] = "w"
-
-    for row_index in range(0, 11):
-        if row_index != 5:
-            rows[row_index][10] = "#"
-
-    for row_index in range(10, 13):
-        rows[row_index][15] = "#"
-        rows[row_index][16] = "#"
-
-    for col_index in range(0, 4):
-        rows[7][col_index] = "w"
-
-    rows[1][1] = "."
-    rows[1][2] = "."
-    rows[2][1] = "."
-    rows[2][2] = "."
-
-    return ["".join(row) for row in rows]
-
-
 def build_grid() -> TerrainGrid:
-    layout = build_demo_layout()
-    grid = TerrainGrid(GRID_COLS, GRID_ROWS, layout=layout)
-    grid.set_start_cell(0, 0)
+    grid = TerrainGrid(GRID_COLS, GRID_ROWS)
     return grid
 
 
@@ -76,6 +50,31 @@ def load_surface(path):
     return None
 
 
+def choose_random_grass_start(grid: TerrainGrid) -> tuple[int, int]:
+    grass_cells = grid.grass_cells()
+    if not grass_cells:
+        raise RuntimeError("No grass cells available for frog spawn")
+    return random.choice(grass_cells)
+
+
+def invalidate_current_path(grid: TerrainGrid, frog: Frog):
+    grid.reset_search_state()
+    grid.goal_cell = None
+    frog.velocity.update(0, 0)
+    frog.set_path([])
+
+
+def summarize_path_terrain(grid: TerrainGrid, path: list[tuple[int, int]]) -> dict[str, int]:
+    counts = {Terrain.GRASS: 0, Terrain.MUD: 0, Terrain.WATER: 0}
+    for col, row in path:
+        cell = grid.get_cell(col, row)
+        if cell is None:
+            continue
+        if cell.terrain in counts:
+            counts[cell.terrain] += 1
+    return counts
+
+
 def main() -> int:
     pygame.init()
     screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
@@ -84,15 +83,22 @@ def main() -> int:
     font = pygame.font.Font(None, FONT_SIZE)
 
     frog_sprite = load_surface(FROG_SPRITE)
-    tileset = load_surface(TILESET)
-    use_sprites = frog_sprite is not None and tileset is not None
-    if not use_sprites:
-        print("Running with fallback drawing because sprite assets could not be loaded.")
+    terrain_textures = {
+        Terrain.GRASS: load_surface(GRASS_TEXTURE),
+        Terrain.MUD: load_surface(MUD_TEXTURE),
+        Terrain.WATER: load_surface(WATER_TEXTURE),
+        Terrain.WALL: load_surface(WALL_TEXTURE),
+    }
+    if frog_sprite is None:
+        print("Running with frog fallback drawing because frog sprite could not be loaded.")
         frog_sprite = None
-        tileset = None
+    if any(texture is None for texture in terrain_textures.values()):
+        missing = [terrain for terrain, texture in terrain_textures.items() if texture is None]
+        print(f"Using per-terrain fallback colors for missing textures: {', '.join(missing)}")
 
     grid = build_grid()
-    start_cell = (0, 0)
+    start_cell = choose_random_grass_start(grid)
+    grid.set_start_cell(*start_cell)
     start_center = grid.cell_to_world_center(*start_cell)
     frog = Frog(*start_center, sprite_path=FROG_SPRITE if frog_sprite is not None else None)
 
@@ -106,16 +112,18 @@ def main() -> int:
     hud_message = ""
     hud_message_time = 0.0
     goal_cell: tuple[int, int] | None = None
+    last_path_breakdown: list[tuple[tuple[int, int], float, float]] = []
 
     grid.goal_cell = None
 
     def reset_world() -> None:
         nonlocal grid, frog, state, result, reveal_cursor, show_final_path, goal_cell, hud_message, hud_message_time
         nonlocal start_cell
+        nonlocal last_path_breakdown
         grid = build_grid()
-        start_cell = (0, 0)
-        grid.goal_cell = None
+        start_cell = choose_random_grass_start(grid)
         grid.set_start_cell(*start_cell)
+        invalidate_current_path(grid, frog)
         frog.pos = pygame.Vector2(*grid.cell_to_world_center(*start_cell))
         frog.velocity.update(0, 0)
         frog.set_path([])
@@ -124,6 +132,7 @@ def main() -> int:
         reveal_cursor = 0
         show_final_path = False
         goal_cell = None
+        last_path_breakdown = []
         hud_message = ""
         hud_message_time = 0.0
 
@@ -134,6 +143,7 @@ def main() -> int:
 
     def handle_right_click(mouse_pos: tuple[int, int]) -> None:
         nonlocal state, result, reveal_cursor, show_final_path, goal_cell, start_cell
+        nonlocal last_path_breakdown
         if state != IDLE:
             return
 
@@ -155,11 +165,43 @@ def main() -> int:
         grid.goal_cell = goal_cell
         grid.reset_search_state()
         result = find_path(grid, start_cell, goal_cell, allow_diagonal)
+        last_path_breakdown = path_cost_breakdown(grid, result.path)
         reveal_cursor = 0
         show_final_path = False
         state = REVEALING
         if not result.reachable:
             set_message("Target unreachable", duration=2.5)
+
+    def handle_left_click(mouse_pos: tuple[int, int]) -> None:
+        nonlocal state, result, reveal_cursor, show_final_path, goal_cell, start_cell, last_path_breakdown
+        col, row = grid.world_to_cell(*mouse_pos)
+        if not grid.in_bounds(col, row):
+            return
+
+        frog_cell = grid.world_to_cell(frog.pos.x, frog.pos.y)
+        if (col, row) == frog_cell:
+            grid.set_terrain(col, row, Terrain.GRASS)
+            grid.set_start_cell(*frog_cell)
+            set_message("Cannot place wall on frog", duration=1.8)
+            return
+
+        cell = grid.get_cell(col, row)
+        if cell is None:
+            return
+
+        new_terrain = Terrain.GRASS if cell.terrain == Terrain.WALL else Terrain.WALL
+        if not grid.set_terrain(col, row, new_terrain):
+            return
+
+        state = IDLE
+        result = None
+        reveal_cursor = 0
+        show_final_path = False
+        goal_cell = None
+        last_path_breakdown = []
+        start_cell = frog_cell
+        grid.set_start_cell(*start_cell)
+        invalidate_current_path(grid, frog)
 
     def update(dt: float) -> None:
         nonlocal state, reveal_cursor, show_final_path, result, hud_message_time, hud_message, start_cell
@@ -190,13 +232,14 @@ def main() -> int:
     def draw() -> None:
         screen.fill(COLOR_BG)
         revealed_cells = set(result.explored_order[:reveal_cursor]) if result is not None else set()
-        grid.draw(screen, tileset, revealed_cells, show_final_path, show_heatmap, show_cost_labels, font)
+        grid.draw(screen, terrain_textures, revealed_cells, show_final_path, show_heatmap, show_cost_labels, font)
         frog.draw(screen)
 
-        y = GRID_ROWS * 48 + 10
+        y = GRID_ROWS * TILE_SIZE + 10
         lines = [
             f"Diagonal: {'ON' if allow_diagonal else 'OFF'}   Heatmap: {'ON' if show_heatmap else 'OFF'}   Cost Labels: {'ON' if show_cost_labels else 'OFF'}",
             "Right-click a reachable non-wall cell to run cost-weighted A*.",
+            "Left-click toggles Wall/Grass (cannot edit frog cell).",
             "Legend: Grass=1  Mud=3  Water=5  Wall=impassable",
         ]
         if result is not None and result.reachable:
@@ -210,6 +253,36 @@ def main() -> int:
             label = font.render(line, True, COLOR_TEXT)
             screen.blit(label, (12, y))
             y += 22
+
+        panel_width = 280
+        panel_x = SCREEN_WIDTH - panel_width - 16
+        panel_y = 12
+        panel_height = 152
+        panel_rect = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
+        pygame.draw.rect(screen, COLOR_PANEL_BG, panel_rect)
+        pygame.draw.rect(screen, COLOR_PANEL_BORDER, panel_rect, 2)
+
+        panel_lines = ["PATH COST"]
+        if result is not None and result.reachable and last_path_breakdown:
+            terrain_counts = summarize_path_terrain(grid, result.path)
+            panel_lines.append(f"Total: {result.total_cost:.1f}")
+            panel_lines.append(f"Path length: {len(result.path)} cells")
+            panel_lines.append(f"Grass: {terrain_counts[Terrain.GRASS]} cells x {TERRAIN_COST[Terrain.GRASS]}")
+            panel_lines.append(f"Mud:   {terrain_counts[Terrain.MUD]} cells x {TERRAIN_COST[Terrain.MUD]}")
+            panel_lines.append(f"Water: {terrain_counts[Terrain.WATER]} cells x {TERRAIN_COST[Terrain.WATER]}")
+        else:
+            panel_lines.append("Total: --")
+            panel_lines.append("Path length: --")
+            panel_lines.append(f"Grass: -- cells x {TERRAIN_COST[Terrain.GRASS]}")
+            panel_lines.append(f"Mud:   -- cells x {TERRAIN_COST[Terrain.MUD]}")
+            panel_lines.append(f"Water: -- cells x {TERRAIN_COST[Terrain.WATER]}")
+
+        text_y = panel_y + 10
+        for index, panel_line in enumerate(panel_lines):
+            color = (255, 255, 255) if index == 0 else COLOR_TEXT
+            label = font.render(panel_line, True, color)
+            screen.blit(label, (panel_x + 10, text_y))
+            text_y += 24
 
         pygame.display.flip()
 
@@ -230,6 +303,8 @@ def main() -> int:
                     show_cost_labels = not show_cost_labels
                 elif event.key == getattr(pygame, f"K_{KEYBINDS['restart']}"):
                     reset_world()
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                handle_left_click(event.pos)
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
                 handle_right_click(event.pos)
 

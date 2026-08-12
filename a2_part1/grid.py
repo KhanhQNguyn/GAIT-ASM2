@@ -22,7 +22,7 @@ class Cell:
 
 
 class TerrainGrid:
-    def __init__(self, cols: int, rows: int, layout: list[str] | None = None, seed: int = 7):
+    def __init__(self, cols: int, rows: int, layout: list[str] | None = None, seed: int | None = None):
         self.cols = cols
         self.rows = rows
         self.start_cell: tuple[int, int] | None = None
@@ -50,21 +50,32 @@ class TerrainGrid:
         for row_index in range(self.rows):
             row_cells = []
             for col_index in range(self.cols):
-                roll = self._rng.random()
-                if roll < 0.08:
-                    terrain = Terrain.WALL
-                elif roll < 0.23:
-                    terrain = Terrain.WATER
-                elif roll < 0.40:
-                    terrain = Terrain.MUD
-                else:
-                    terrain = Terrain.GRASS
-                row_cells.append(Cell(col_index, row_index, terrain))
+                row_cells.append(Cell(col_index, row_index, Terrain.GRASS))
             cells.append(row_cells)
 
-        for _ in range(3):
+        for _ in range(6):
             self._stamp_blob(cells, Terrain.MUD, radius=2)
+        for _ in range(5):
             self._stamp_blob(cells, Terrain.WATER, radius=2)
+        for _ in range(6):
+            self._stamp_blob(cells, Terrain.WALL, radius=1)
+
+        # Keep a mostly-grass map while preserving visible weighted patches.
+        for row_cells in cells:
+            for cell in row_cells:
+                if cell.terrain == Terrain.GRASS:
+                    continue
+                roll = self._rng.random()
+                if cell.terrain == Terrain.WALL and roll < 0.35:
+                    cell.terrain = Terrain.GRASS
+                elif cell.terrain == Terrain.WATER and roll < 0.24:
+                    cell.terrain = Terrain.GRASS
+                elif cell.terrain == Terrain.MUD and roll < 0.18:
+                    cell.terrain = Terrain.GRASS
+
+        has_grass = any(cell.terrain == Terrain.GRASS for row_cells in cells for cell in row_cells)
+        if not has_grass:
+            cells[0][0].terrain = Terrain.GRASS
         return cells
 
     def _stamp_blob(self, cells: list[list[Cell]], terrain: str, radius: int) -> None:
@@ -74,6 +85,21 @@ class TerrainGrid:
             for col_index in range(max(0, center_col - radius), min(self.cols, center_col + radius + 1)):
                 if self._rng.random() < 0.55:
                     cells[row_index][col_index].terrain = terrain
+
+    def grass_cells(self) -> list[tuple[int, int]]:
+        cells: list[tuple[int, int]] = []
+        for row_cells in self.cells:
+            for cell in row_cells:
+                if cell.terrain == Terrain.GRASS:
+                    cells.append((cell.col, cell.row))
+        return cells
+
+    def set_terrain(self, col: int, row: int, terrain: str) -> bool:
+        cell = self.get_cell(col, row)
+        if cell is None:
+            return False
+        cell.terrain = terrain
+        return True
 
     @staticmethod
     def _terrain_from_layout_char(char: str) -> str:
@@ -177,7 +203,7 @@ class TerrainGrid:
     def draw(
         self,
         surface: pygame.Surface,
-        tileset_or_none: pygame.Surface | None,
+        terrain_textures: dict[str, pygame.Surface],
         revealed_cells: set[tuple[int, int]],
         show_final_path: bool,
         show_heatmap: bool,
@@ -187,7 +213,7 @@ class TerrainGrid:
         for row_cells in self.cells:
             for cell in row_cells:
                 rect = pygame.Rect(cell.col * TILE_SIZE, cell.row * TILE_SIZE, TILE_SIZE, TILE_SIZE)
-                self._draw_base_tile(surface, rect, cell.terrain, tileset_or_none)
+                self._draw_base_tile(surface, rect, cell.terrain, terrain_textures.get(cell.terrain))
 
                 if show_heatmap and cell.terrain != Terrain.WALL:
                     heat_color = self._heat_color_for_terrain(cell.terrain)
@@ -229,30 +255,17 @@ class TerrainGrid:
         surface: pygame.Surface,
         rect: pygame.Rect,
         terrain: str,
-        tileset_or_none: pygame.Surface | None,
+        terrain_texture: pygame.Surface | None,
     ) -> None:
-        if tileset_or_none is not None and tileset_or_none.get_width() >= 4:
+        if terrain_texture is not None:
             try:
-                tile_width = tileset_or_none.get_width() // 4
-                source_rect = pygame.Rect(self._terrain_to_tileset_index(terrain) * tile_width, 0, tile_width, tileset_or_none.get_height())
-                tile = tileset_or_none.subsurface(source_rect)
-                scaled = pygame.transform.smoothscale(tile, (TILE_SIZE, TILE_SIZE))
+                scaled = pygame.transform.smoothscale(terrain_texture, (TILE_SIZE, TILE_SIZE))
                 surface.blit(scaled, rect.topleft)
                 return
             except pygame.error:
                 pass
 
         pygame.draw.rect(surface, TERRAIN_COLOR[terrain], rect)
-
-    @staticmethod
-    def _terrain_to_tileset_index(terrain: str) -> int:
-        mapping = {
-            Terrain.GRASS: 0,
-            Terrain.MUD: 1,
-            Terrain.WATER: 2,
-            Terrain.WALL: 3,
-        }
-        return mapping[terrain]
 
     @staticmethod
     def _heat_color_for_terrain(terrain: str) -> tuple[int, int, int]:

@@ -1,0 +1,1536 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+assets/
+  frog_sprite.png
+FINAL_IMPLEMENTATION_PLAN.md
+frog.py
+grid.py
+main.py
+pathfinding.py
+README.md
+settings.py
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="FINAL_IMPLEMENTATION_PLAN.md">
+# FINAL IMPLEMENTATION PLAN — A2 Part 1: A* Over a Weighted-Cost Grid & Path-Following Frog
+
+**Status:** Implementation-ready. Self-contained — no other document needs to be read alongside this one. Written for an AI coding agent (e.g. Antigravity).
+## 0. EXECUTION INSTRUCTION — IMPLEMENT THIS IN THE EXISTING `a2_part1/` FOLDER
+
+You are working directly inside the existing assignment repository.
+
+Your first task is to locate and open the `a2_part1/` folder in the current workspace.
+
+IMPORTANT:
+- `a2_part1/` is the ONLY folder you are allowed to modify for Part 1.
+- Implement the entire Part 1 assignment inside `a2_part1/`.
+- Do NOT create the implementation in the repository root.
+- Do NOT implement Part 1 in another folder with a different name.
+- Do NOT modify Part 2 / Connect4 / MCTS code.
+- Before writing code, inspect the existing contents of `a2_part1/` and determine whether there is an existing Part 1 implementation that should be replaced or refactored.
+- If an existing Part 1 implementation conflicts with this specification, modify/remove the conflicting Part 1 code inside `a2_part1/` so that the final implementation conforms to this specification.
+- You may create, modify, rename, or delete files INSIDE `a2_part1/` as necessary.
+- Do not touch files outside `a2_part1/` unless absolutely required for the project to run, and if such a change is unavoidable, explain it before making it.
+- The final runnable entry point MUST be:
+
+    a2_part1/main.py
+
+- The final application MUST be runnable with:
+
+    cd a2_part1
+    python main.py
+
+Execution order:
+1. Locate `a2_part1/`.
+2. Inspect its existing files and assets.
+3. Inspect any existing Part 1 code before modifying it.
+4. Implement/refactor the complete Part 1 solution according to this specification.
+5. Run/test the implementation from inside `a2_part1/`.
+6. Fix any runtime, import, pathfinding, movement, or visualization errors found during testing.
+7. Verify the final file structure and acceptance checklist before considering the task complete.
+
+Do not merely provide code snippets or an implementation plan. Actually implement the solution in the `a2_part1/` folder.
+---
+
+## 1. Scope
+
+**In scope:** a grid where each cell has a traversal cost, A* search over that weighted-cost grid (toggleable 8-directional movement), a reveal-before-move visualization, a green final path, total-cost and per-cell-cost display, and a frog that follows the resulting path continuously via an explicit Seek steering behaviour.
+
+**Out of scope / must not be present anywhere in this project:**
+- Any Assignment 1 code, class, asset, or system (flies, snakes, health, hiding, or any other A1 gameplay mechanic). This project is built entirely from scratch; nothing imports, extends, or assumes any A1 source exists.
+- Connect 4, MCTS, any shared `scenes.py`, menu, or mode switch.
+- Predictive look-ahead steering, path-radius drift correction, mass/acceleration/force-limited physics.
+- Independent obstacle avoidance that would let the frog deviate from the A* route — the route is decided once by A* and never renegotiated by the movement layer.
+
+**Terminology note:** this project does **not** implement "Weighted A*" in the formal algorithmic sense (`f(n) = g(n) + w·h(n)` with `w > 1`). It implements standard `f(n) = g(n) + h(n)` A* search over a grid whose edges carry **terrain-dependent movement costs**. Refer to this everywhere — code comments, README, demo narration — as **"A* over a weighted-cost grid"** or **"cost-weighted A*"**, never as "Weighted A*".
+
+The project must run standalone via `python main.py` from inside `a2_part1/`.
+
+---
+
+## 2. Coordinate systems — grid space vs. world space
+
+Two coordinate systems exist in this project and must never be mixed:
+
+- **Grid space:** `(col, row)`, integer, zero-indexed, `col` increasing rightward, `row` increasing downward. This is the only coordinate system A* and the grid's internal data structures operate in.
+- **World space:** `pygame.Vector2` / `(x, y)` float pixel coordinates. This is the only coordinate system the frog operates in.
+
+**Conversion happens in exactly two places, both owned by `grid.py`:**
+- `world_to_cell(x, y) -> (col, row)` — used only when handling a mouse click.
+- `cell_to_world_center(col, row) -> (x, y)` — used only when converting a finished A* path into waypoints for the frog.
+
+`pathfinding.py` works exclusively in grid space and never imports pygame. `main.py` is the only file that converts an `AStarResult.path` (grid space) into a world-space waypoint list, immediately before calling `frog.set_path(...)`. No other file performs this conversion.
+
+---
+
+## 3. Grid & terrain
+
+- **Grid dimensions:** `GRID_COLS = 20`, `GRID_ROWS = 14`, `TILE_SIZE = 48` px. *(Engineering default — adjust freely; the only functional requirement is that the grid stay large enough to make weighted-terrain detours visible on camera.)*
+- A cell's world-space center: `(col * TILE_SIZE + TILE_SIZE / 2, row * TILE_SIZE + TILE_SIZE / 2)`. Every waypoint the frog ever targets is a cell **center**, never a corner.
+- **Terrain types and costs** (finite costs only — only `WALL` is structurally impassable):
+
+  | Terrain | Cost | Meaning |
+  |---|---|---|
+  | `GRASS` | `1` | Cheapest, default terrain |
+  | `MUD` | `3` | Costly but legal detour |
+  | `WATER` | `5` | Most costly legal terrain |
+  | `WALL` | `float('inf')` | Structurally impassable — excluded from the graph entirely |
+
+  `MIN_TERRAIN_COST = min(cost for cost in TERRAIN_COST.values() if cost != float('inf'))`, computed once from the live cost table. **Never hardcode `1` as this value anywhere else in the codebase** — the heuristic in §4.3 depends on this being derived, not assumed.
+- **Layout:** support both procedural generation (weighted random terrain, mostly grass with mud/water pockets and modest wall density) and an optional fixed `layout: list[str]` (`'.'`=grass, `'m'`=mud, `'w'`=water, `'#'`=wall) for a reproducible demo map.
+- **Connectivity:** after generation, run a flood-fill (4-connected, over all non-`WALL` cells) from the frog's start cell, exposed as `is_reachable(col, row) -> bool`, so an unreachable right-click can be rejected with a clear message instead of producing a confusing dead end.
+- **Start/target:** the frog's current position is always the A* start. The target is whatever cell the user right-clicks. Right-clicking a `WALL` cell, or a cell `is_reachable()` reports `False` for, is rejected before A* ever runs — show a brief on-screen message instead.
+
+---
+
+## 4. A* specification (pure algorithm, no pygame)
+
+### 4.1 Node representation
+
+Each grid cell `(col, row)` is a node. No separate node class exists — `pathfinding.py` keeps its own internal search bookkeeping (`best_g`, `came_from`) as local dictionaries scoped to a single `find_path()` call, and writes onto the grid's `Cell` objects (`g_cost`, `explored`, `in_path`) **only at finalization time** (§4.5) — never during relaxation.
+
+### 4.2 Priority queue, tie-breaking, and stale entries
+
+- **Open set:** a binary min-heap (`heapq`) holding `(f_score, tie_break, col, row)` tuples.
+- **Tie-breaking:** `tie_break` is a strictly increasing integer counter, incremented on every push, used purely to keep heap tuples fully ordered without ever comparing `(col, row)` pairs directly. This does not alter `f_score` and introduces no inadmissibility.
+- **Duplicate heap entries:** the same `(col, row)` may be pushed multiple times as cheaper routes to it are discovered. This is expected and handled via the `best_g` dict, not prevented at push time.
+- **Stale-entry detection:** maintain `best_g: dict[(col,row), float]`, initialized with `best_g[start] = 0`. On every relaxation that improves a neighbor's cost, update `best_g[neighbor]` and push a new heap entry — do not attempt to decrease-key an existing heap entry (not supported by `heapq`). When popping `(f, tie_break, col, row)` from the heap, first compare its embedded `g` against `best_g[(col, row)]`; if the popped entry's `g` is worse (larger) than the current `best_g` value for that cell, this entry is stale — discard it and continue the loop without processing it further. This is standard lazy-deletion A* and requires no explicit closed-set container.
+
+### 4.3 Cost function and heuristic
+
+```
+g(start) = 0
+g(neighbor) = g(current) + movement_cost(current, neighbor)
+
+movement_cost(a, b) = TERRAIN_COST[b.terrain] * (sqrt(2) if diagonal(a, b) else 1)
+
+f(n) = g(n) + h(n)
+
+h(n) = MIN_TERRAIN_COST * distance(n, goal)
+
+  distance(n, goal) =
+      octile(n, goal)    if allow_diagonal
+      manhattan(n, goal) if not allow_diagonal
+
+  octile(n, goal):
+      dx, dy = abs(goal.col - n.col), abs(goal.row - n.row)
+      return (dx + dy) + (sqrt(2) - 2) * min(dx, dy)
+
+  manhattan(n, goal):
+      dx, dy = abs(goal.col - n.col), abs(goal.row - n.row)
+      return dx + dy
+```
+
+Terrain weighting belongs entirely in `movement_cost` / `g(n)`. The heuristic scales the *geometric* distance by `MIN_TERRAIN_COST` only — it must never itself branch on individual terrain types, and it must never be inflated by any factor greater than `MIN_TERRAIN_COST` (no artificial `w > 1` multiplier of any kind — that would be actual Weighted A* and would risk suboptimal paths).
+
+**Admissibility/consistency:** the cheapest possible real transition, cardinal or diagonal, costs `MIN_TERRAIN_COST * 1` or `MIN_TERRAIN_COST * sqrt(2)` respectively — that is the definition of `MIN_TERRAIN_COST`. `octile()`/`manhattan()` compute the exact geometric shortest distance under those same unit assumptions. Scaling that geometric distance by `MIN_TERRAIN_COST` therefore produces the cost of the cheapest theoretically possible path to the goal, ignoring obstacles — always `<=` the true optimal cost, since obstacles and non-minimum-cost terrain can only make a real path longer, never shorter (admissibility). Consistency follows because `octile`/`manhattan` are proper distance metrics (they satisfy the triangle inequality) and a positive constant scale factor preserves that property.
+
+### 4.4 Neighbor generation & corner-cutting
+
+- `neighbors(col, row, allow_diagonal) -> list[(col, row)]`:
+  - Cardinal neighbors: included if in-bounds and `cost(neighbor) != inf`.
+  - Diagonal neighbors (only if `allow_diagonal`): a diagonal transition
+    ```
+    (c, r) -> (c + dc, r + dr)        where dc, dr in {-1, +1}
+    ```
+    is **rejected** if either orthogonal neighbor is impassable:
+    ```
+    cost(c + dc, r) == inf   OR   cost(c, r + dr) == inf
+    ```
+    This is an exact boolean condition, evaluated on the grid directly — never approximated with a distance check.
+
+### 4.5 Finalization, path reconstruction, and output
+
+- A node's `g_cost`/`explored` fields on its `Cell` object are written **exactly once**, at the moment it is popped from the heap and confirmed not stale (§4.2) — this is "finalization." They are never written during relaxation/pushing, so `Cell.g_cost` always reflects the true finalized cost, never a since-superseded candidate value. `explored_order` (a plain list) gets this cell's `(col, row)` appended at the same moment, in pop order.
+- On finalizing `goal`: reconstruct the path via `came_from: dict[(col,row), (col,row)]`, walking from `goal` back to `start`, then reversing. **No smoothing, no string-pulling, no waypoint pruning.** Mark every cell on the reconstructed path with `cell.in_path = True`.
+- **Canonical path representation — grid coordinates only:**
+  ```python
+  @dataclass
+  class AStarResult:
+      path: list[tuple[int, int]]          # GRID coordinates (col, row), start -> goal inclusive
+      total_cost: float                     # g_cost of goal; float('inf') if unreachable
+      explored_order: list[tuple[int, int]] # GRID coordinates, in POP/finalization order
+      reachable: bool
+  ```
+  `path` is never world-space and never converted to pixels inside `pathfinding.py`. World-space conversion happens only in `main.py` (§2, §7).
+- **Start equals goal:** finalize `start` directly (`g_cost = 0`, `explored = True`, `in_path = True`), return `path=[start]`, `total_cost=0.0`, `explored_order=[start]`, `reachable=True` — no heap loop required.
+- **Unreachable target:** if the heap empties before `goal` is finalized, return `path=[]`, `total_cost=float('inf')`, `explored_order=<everything actually finalized>`, `reachable=False`. Never raise or crash on this case.
+- **`path_cost_breakdown(grid, path) -> list[tuple[tuple[int,int], float, float]]`:** given `path` (grid coordinates, exactly as returned by `find_path`, never pre-converted to world space), return `(coord, step_cost, cumulative_cost)` for every cell on the path, computed once after the search completes.
+
+---
+
+## 5. Reveal state machine & visualization
+
+### 5.1 Two distinct layers of state — do not conflate them
+
+1. **Search state** (finalized instantly, the moment `find_path()` returns): `Cell.g_cost`, `Cell.explored`, `Cell.in_path`. Because A* runs synchronously to completion in a single call, every explored cell already has `explored = True` the instant `find_path()` returns — **before any visual reveal has happened.**
+2. **Visual reveal state** (paced frame-by-frame by `main.py`, entirely separate from #1): a `reveal_cursor: int`, advanced by `REVEAL_CELLS_PER_FRAME` cells per frame through `result.explored_order`.
+
+**The rendering layer must key off the visual reveal state, never off `Cell.explored`/`Cell.in_path` directly** — since those are already `True` for the entire explored region immediately after the search, rendering conditioned on them alone would show every explored cell (and the finished green path) instantly, defeating the reveal animation entirely. Concretely:
+
+- Each frame during `REVEALING`, `main.py` computes `revealed_cells = set(result.explored_order[:reveal_cursor])` and passes it into `grid.draw(...)`.
+- `grid.draw()` renders the explored-overlay and `g_cost` label for a cell **only if that cell's `(col, row)` is in the `revealed_cells` set it was given** — not by checking `cell.explored`.
+- `main.py` also tracks a `show_final_path: bool`, `False` for the entirety of `IDLE`→`REVEALING`, and set `True` only once `reveal_cursor` has consumed the entire `explored_order` list (i.e. reveal is complete). `grid.draw()` renders the green final-path overlay only when `show_final_path` is `True` — not by unconditionally checking `cell.in_path`.
+
+### 5.2 Required visual states
+
+| State | Rendering | Gated by |
+|---|---|---|
+| Unexplored | Base terrain tile only | (default) |
+| Explored (revealed) | Terrain tile + overlay + `g_cost` label | `(col,row) in revealed_cells` |
+| Frontier (optional) | Distinct overlay from explored | Engineering default — optional, aids narration |
+| Final path | Solid **green** overlay/line | `show_final_path is True` |
+| Start / goal | Distinct marker | Drawn independently of reveal state |
+| Wall | Distinct terrain tile/color, never overlaid with explored/path coloring | (default) |
+
+### 5.3 State machine
+
+```
+IDLE --(right-click valid target)--> REVEALING --(reveal_cursor exhausts explored_order)--> FOLLOWING --(frog.is_path_complete())--> IDLE
+```
+
+| Current state | Trigger | Action | Next state |
+|---|---|---|---|
+| `IDLE` | Right-click on a valid (in-bounds, non-`WALL`, reachable) cell | `grid.reset_search_state()`; run `pathfinding.find_path(...)`; store `result`; `reveal_cursor = 0`; `show_final_path = False` | `REVEALING` |
+| `IDLE` | Right-click on an invalid cell | Show a brief on-HUD rejection message | `IDLE` (unchanged) |
+| `REVEALING` | Every frame | `reveal_cursor = min(reveal_cursor + REVEAL_CELLS_PER_FRAME, len(result.explored_order))`; recompute `revealed_cells` | `REVEALING` (unchanged) until exhausted |
+| `REVEALING` | `reveal_cursor == len(result.explored_order)` | `show_final_path = True`; convert `result.path` (grid coords) to world-space waypoints via `grid.cell_to_world_center`; call `frog.set_path(world_path)` | `FOLLOWING` |
+| `FOLLOWING` | Every frame | `frog.follow_path(dt)` | `FOLLOWING` (unchanged) until complete |
+| `FOLLOWING` | `frog.is_path_complete()` | — | `IDLE` |
+| any state | `restart` keybind | Rebuild grid; reset frog to a start cell; clear `result`, `reveal_cursor`, `show_final_path` | `IDLE` |
+| any state | toggle diagonal/heatmap/cost-label keybind | Flip the corresponding boolean; must not mutate any field of an in-flight `result` — affects only the *next* right-click | unchanged |
+| `REVEALING` or `FOLLOWING` | right-click | Ignored — right-clicks are only accepted in `IDLE` | unchanged |
+
+If `result.reachable is False`: skip `REVEALING`'s transition into `FOLLOWING` entirely (there is no path to follow); still run the reveal animation over whatever was explored so the demo can show *why* it failed; display an explicit "target unreachable" message; return to `IDLE` once the reveal finishes instead of proceeding to `FOLLOWING`.
+
+---
+
+## 6. Frog movement — explicit Seek steering
+
+### 6.1 Behaviour
+
+The frog uses an explicit **Seek** steering computation, applied with **no force limit and no smoothing**, so that velocity is fully redirected toward the current target every frame — this keeps the code and vocabulary recognizably a steering behaviour (not plain teleport/index-jump between cells) while guaranteeing the frog can never drift off the straight segment between its current and next waypoint, since there is no inertia for it to drift with.
+
+```
+desired_velocity = normalize(target - position) * FROG_SPEED
+steering = desired_velocity - velocity
+velocity = velocity + steering        # == velocity = desired_velocity  (unlimited responsiveness)
+position += velocity * dt
+```
+
+**Explicitly not implemented:** mass, acceleration limits, accumulated force summation, max-force clamping, predictive look-ahead, path-line projection/drift-correction, arrival deceleration blending, or any obstacle avoidance. None of these constants (`MAX_FORCE`, `SLOW_RADIUS`, `PREDICT_DIST`, `PATH_RADIUS`) exist anywhere in this project.
+
+### 6.2 Overshoot-safe waypoint traversal
+
+If, in a single frame, `FROG_SPEED * dt` exceeds the remaining distance to the current waypoint, the frog must not overshoot past it. Traverse with a **bounded loop** (never recursion):
+
+```
+remaining_distance = FROG_SPEED * dt
+loop (bounded to at most len(path)+1 iterations):
+    if no current waypoint or path already complete: exit loop
+    target = current waypoint
+    dist_to_target = distance(position, target)
+    recompute velocity via the Seek formula in §6.1, toward target
+
+    if dist_to_target <= remaining_distance:
+        position = target                          # snap exactly onto the waypoint
+        remaining_distance -= dist_to_target
+        if there is a next waypoint:
+            advance to next waypoint                # loop continues, carrying leftover distance
+        else:
+            velocity = (0, 0)
+            remaining_distance = 0                  # path complete, stop
+    else:
+        position += velocity.normalized() * remaining_distance
+        remaining_distance = 0                      # step fully consumed, exit loop
+```
+
+This guarantees: one frame's movement can correctly cross multiple short path segments in a single update (e.g. an unusually high `FROG_SPEED` or a large `dt` spike), the frog never overshoots any waypoint, and the loop is bounded and cannot hang even on a pathological zero-length final segment.
+
+### 6.3 API
+
+```python
+class Frog:
+    def __init__(self, x, y, sprite_path=None): ...
+        # pos: Vector2, velocity: Vector2 (0,0), path: list[Vector2] = [],
+        # path_index: int = 0, angle: float = 0.0, sprite: Surface | None
+
+    def set_path(self, world_points: list[tuple[float, float]]) -> None: ...
+        # world_points are WORLD-SPACE pixel coordinates (already converted by main.py from
+        # AStarResult.path via grid.cell_to_world_center). Resets path_index = 0.
+
+    def follow_path(self, dt: float) -> None: ...
+        # Implements §6.1/§6.2 exactly. No-op if path is empty or already complete.
+
+    def is_path_complete(self) -> bool: ...
+        # True if path_index is at the final waypoint and position is within a small
+        # floating-point epsilon of it.
+
+    def draw(self, surface) -> None: ...
+        # Rotates the sprite to face `angle` (derived from velocity direction); falls back to
+        # a filled circle + direction line if the sprite failed to load, so a missing PNG
+        # never crashes the demo.
+```
+
+---
+
+## 7. File architecture & implementation prompts
+
+```
+a2_part1/
+  settings.py
+  grid.py
+  pathfinding.py
+  frog.py
+  main.py
+  assets/
+    frog_sprite.png
+    tileset.png
+  README.md
+```
+
+No `scenes.py`, no `mcts.py`, no Connect4/menu imports, no Assignment 1 imports anywhere in this tree.
+
+### `settings.py`
+**Responsibility:** constants only. **Must NOT contain:** `pygame.init()`, `Surface` creation, or any game logic.
+
+**Implementation Prompt:**
+```text
+You are implementing settings.py for a standalone A*-over-a-weighted-cost-grid demo, built
+entirely from scratch (no Assignment 1 dependency of any kind).
+
+Define, as module-level constants with no side effects:
+- GRID_COLS=20, GRID_ROWS=14, TILE_SIZE=48, derived SCREEN_WIDTH/HEIGHT, FPS=60.
+- class Terrain with GRASS/MUD/WATER/WALL string constants.
+- TERRAIN_COST = {GRASS: 1, MUD: 3, WATER: 5, WALL: float('inf')}.
+- MIN_TERRAIN_COST = min(v for v in TERRAIN_COST.values() if v != float('inf')). Every other
+  file must import and use this constant — never hardcode 1 as the heuristic scale elsewhere.
+- TERRAIN_COLOR fallback colors per terrain (used if tileset.png fails to load).
+- FROG_SPEED (px/sec) — the only motion-speed constant this project uses.
+- COLOR_EXPLORED, COLOR_FRONTIER, COLOR_PATH=(0,230,90) [green — mandatory for the final path],
+  COLOR_TEXT, COLOR_BG.
+- ASSETS_DIR, FROG_SPRITE = ASSETS_DIR/"frog_sprite.png", TILESET = ASSETS_DIR/"tileset.png".
+- REVEAL_CELLS_PER_FRAME (int, paces the visual reveal — independent of search timing, since
+  the search itself already completes synchronously in one call).
+- FONT_SIZE (HUD text and in-cell g-cost labels).
+- KEYBINDS = {"toggle_diagonal": ..., "toggle_heatmap": ..., "toggle_cost_labels": ...,
+  "restart": ...}.
+
+Do NOT define MAX_FORCE, SLOW_RADIUS, PREDICT_DIST, or PATH_RADIUS — this project's frog uses
+unlimited-responsiveness Seek steering (see frog.py spec), not force-limited physics, so none
+of these constants have any use here.
+
+Constraints: no pygame.init(), no Surface objects, no drawing code, no game logic, no
+Assignment 1 import of any kind.
+```
+
+### `grid.py`
+**Responsibility:** `Cell` and `TerrainGrid` — terrain data, cell search-state fields, neighbor generation, connectivity, coordinate conversion, and drawing (including the reveal/final-path gating from §5.1). No A* algorithm, no frog logic here.
+
+**Implementation Prompt:**
+```text
+You are implementing grid.py from scratch (no Assignment 1 dependency).
+
+Define:
+- Cell (col, row, terrain, g_cost=None, explored=False, in_path=False), using __slots__.
+- TerrainGrid(cols, rows): builds a cols x rows array of Cells, either procedurally (weighted
+  random terrain) or from an optional layout: list[str] ('.'=grass,'m'=mud,'w'=water,'#'=wall).
+- After generation, flood-fill connectivity (4-connected, non-WALL cells) from a given start
+  cell; expose is_reachable(col, row) -> bool.
+
+Required API (exact signatures):
+- in_bounds(col, row) -> bool
+- get_cell(col, row) -> Cell | None            # returns None if out of bounds; used by
+                                                  pathfinding.py and main.py instead of indexing
+                                                  the internal array directly
+- cost(col, row) -> float                       # TERRAIN_COST[terrain]; inf for wall/OOB
+- neighbors(col, row, allow_diagonal: bool) -> list[tuple[int,int]]
+    - cardinal: included if in-bounds and cost != inf
+    - diagonal (only if allow_diagonal): included only if in-bounds, cost != inf, AND both
+      orthogonal cells (c+dc, r) and (c, r+dr) have cost != inf — exact boolean check, per the
+      Part 1 spec section 4.4, never a distance-based approximation
+- movement_cost(from_cell, to_cell) -> float    # TERRAIN_COST[to_cell.terrain] * (sqrt(2) if
+                                                   diagonal else 1)
+- reset_search_state() -> None                  # clears explored/in_path/g_cost on every cell
+- world_to_cell(x, y) -> tuple[int,int]
+- cell_to_world_center(col, row) -> tuple[float,float]
+- draw(surface, tileset_or_none, revealed_cells: set[tuple[int,int]], show_final_path: bool,
+       show_heatmap: bool, show_cost_labels: bool, font) -> None
+    - Draws base terrain for every cell always.
+    - Draws the explored overlay and g_cost label ONLY for cells whose (col,row) is a member of
+      revealed_cells — NOT by checking cell.explored directly (cell.explored is already True
+      for the whole explored region the instant the search finishes, well before the reveal
+      animation has played; revealed_cells is what paces the animation — see spec section 5.1).
+    - Draws the green final-path overlay ONLY when show_final_path is True — NOT by
+      unconditionally checking cell.in_path (same reasoning as above).
+    - Must clearly visually distinguish: unexplored, explored/revealed, frontier (optional),
+      final path (green), wall, start, goal.
+
+Constraints:
+- No pathfinding algorithm (no heap, no A* loop) lives here — that belongs in pathfinding.py.
+- No frog/steering code here.
+
+Do not:
+- Key any rendering decision off cell.explored or cell.in_path directly — always go through the
+  revealed_cells set / show_final_path flag supplied by the caller.
+- Special-case WALL vs MUD/WATER anywhere except via the shared cost()/TERRAIN_COST lookup.
+- Reference, import, or assume any Assignment 1 module.
+```
+
+### `pathfinding.py`
+**Responsibility:** pure A* over the weighted-cost grid, entirely in grid-space coordinates. No pygame import.
+
+**Implementation Prompt:**
+```text
+You are implementing pathfinding.py from scratch. No pygame import anywhere in this file — it
+must be fully testable without a display. No Assignment 1 dependency.
+
+Required API (exact signatures):
+
+@dataclass
+class AStarResult:
+    path: list[tuple[int, int]]            # GRID coordinates only — never world-space here
+    total_cost: float
+    explored_order: list[tuple[int, int]]  # GRID coordinates, in finalization/pop order
+    reachable: bool
+
+def find_path(grid, start: tuple[int,int], goal: tuple[int,int], allow_diagonal: bool) -> AStarResult
+
+def path_cost_breakdown(grid, path: list[tuple[int,int]]) -> list[tuple[tuple[int,int], float, float]]
+    # path is GRID coordinates, exactly as returned by find_path — never pre-converted to
+    # world-space before calling this. Returns (coord, step_cost, cumulative_cost) per cell.
+
+Algorithm — implement exactly as specified in Part 1 spec section 4:
+1. If start == goal: finalize start immediately (g_cost=0, explored=True, in_path=True on its
+   Cell via grid.get_cell), return path=[start], total_cost=0.0, explored_order=[start],
+   reachable=True. No heap loop.
+2. Otherwise, run a heapq-based open set of (f_score, tie_break_counter, col, row) tuples, an
+   internal best_g dict (best_g[start] = 0.0), and an internal came_from dict.
+3. h(n) = grid.MIN_TERRAIN_COST * octile_or_manhattan_distance(n, goal), branching on
+   allow_diagonal exactly as in spec section 4.3. Never hardcode the scale factor to 1.
+4. On each pop: if the popped entry's g exceeds the current best_g for that cell (i.e. this
+   entry is stale because a cheaper route was found and pushed after this entry), discard it and
+   continue the loop without processing it further.
+5. Otherwise finalize this cell: write cell.g_cost = g and cell.explored = True onto its Cell
+   object via grid.get_cell (this write happens ONLY here, at finalization — never during
+   relaxation in step 6), and append (col,row) to explored_order.
+6. If this cell is goal: reconstruct the path via came_from (grid coordinates, no smoothing, no
+   pruning), mark cell.in_path = True on every path cell, and return the AStarResult.
+7. Otherwise, for each neighbor from grid.neighbors(col, row, allow_diagonal): compute
+   tentative_g = g + grid.movement_cost(current_cell, neighbor_cell); if this improves on
+   best_g.get(neighbor, inf), update best_g[neighbor], came_from[neighbor] = current, and push a
+   new heap entry — do not attempt to modify an existing heap entry in place.
+8. If the heap empties without finalizing goal: return path=[], total_cost=float('inf'),
+   explored_order=<everything finalized so far>, reachable=False. Never raise/crash.
+
+Do not:
+- Import pygame or perform any drawing.
+- Return or accept world-space coordinates anywhere in this file's public API.
+- Smooth, prune, or otherwise simplify the returned path.
+- Reference, import, or assume any Assignment 1 module.
+```
+
+### `frog.py`
+**Responsibility:** explicit Seek steering, entirely in world-space, per §6. No pathfinding, no grid logic.
+
+**Implementation Prompt:**
+```text
+You are implementing frog.py from scratch (no Assignment 1 dependency).
+
+Required API (exact signatures):
+class Frog:
+    def __init__(self, x, y, sprite_path=None): ...
+    def set_path(self, world_points: list[tuple[float, float]]) -> None: ...
+    def follow_path(self, dt: float) -> None: ...
+    def is_path_complete(self) -> bool: ...
+    def draw(self, surface) -> None: ...
+
+Internal state: pos (Vector2), velocity (Vector2, starts at (0,0)), path (list[Vector2]),
+path_index (int), angle (float, degrees), sprite (Surface|None).
+
+Algorithm — implement exactly as specified in Part 1 spec section 6:
+- set_path(world_points): store as a list of Vector2, reset path_index = 0. world_points are
+  already world-space pixel coordinates (converted by main.py — this file never converts grid
+  coordinates itself).
+- follow_path(dt): if path is empty or is_path_complete() is already True, set velocity to (0,0)
+  and return. Otherwise run the BOUNDED LOOP from spec section 6.2 (never recursion): each
+  iteration computes velocity via the Seek formula in section 6.1 (desired_velocity =
+  normalize(target - pos) * FROG_SPEED; velocity = desired_velocity directly, no force limit),
+  checks whether this frame's remaining movement distance reaches or passes the current
+  waypoint, and either snaps onto the waypoint and carries over leftover distance into the next
+  segment (advancing path_index), or consumes the remaining distance moving toward the current
+  waypoint and stops. Cap loop iterations at len(path)+1 to guarantee termination.
+- is_path_complete(): True if path_index is at the last waypoint and pos is within a small
+  epsilon of it.
+- draw(): rotate sprite to face `angle` (derived from velocity's direction, updated only while
+  velocity is non-zero); fall back to a filled circle + short direction line if the sprite
+  failed to load.
+
+Do not:
+- Add MAX_FORCE, SLOW_RADIUS, PREDICT_DIST, or PATH_RADIUS constants or any force-limiting logic
+  — velocity is always set directly to desired_velocity, with no clamping or smoothing.
+- Implement any predictive look-ahead or path-line projection/drift-correction.
+- Use recursion for the overshoot/leftover-distance handling — use the bounded loop specified.
+- Let the frog's position ever leave the straight segment between its current and next waypoint.
+- Reference, import, or assume any Assignment 1 module, class, or asset.
+```
+
+### `main.py`
+**Responsibility:** the sole entry point. Owns `pygame.init()`, the window, the `IDLE/REVEALING/FOLLOWING` state machine (§5.3), event handling, the grid-to-world path conversion (§2), and HUD drawing.
+
+**Implementation Prompt:**
+```text
+You are implementing main.py, the sole entry point for this standalone project. No Assignment 1
+import of any kind.
+
+Responsibilities:
+- pygame.init(), build window at settings.SCREEN_WIDTH x SCREEN_HEIGHT, load a shared
+  pygame.font.Font(None, settings.FONT_SIZE).
+- Attempt to load settings.FROG_SPRITE and settings.TILESET once; on failure, log via print and
+  set USE_SPRITES=False so grid.draw()/frog.draw() use their flat-color/shape fallbacks.
+- Build a TerrainGrid, pick a starting grass cell, construct Frog at that cell's center.
+- Own state machine variables directly: state (IDLE/REVEALING/FOLLOWING), result (AStarResult |
+  None), reveal_cursor (int), show_final_path (bool), plus allow_diagonal, show_heatmap,
+  show_cost_labels toggles — implement every transition in the table in Part 1 spec section 5.3
+  exactly, including: right-clicks are only ever accepted while state == IDLE; on a valid
+  right-click, call grid.reset_search_state(), run pathfinding.find_path(...), store result,
+  reset reveal_cursor = 0 and show_final_path = False, switch to REVEALING.
+- update(dt):
+    - REVEALING: reveal_cursor = min(reveal_cursor + settings.REVEAL_CELLS_PER_FRAME,
+      len(result.explored_order)). Once reveal_cursor == len(result.explored_order): if
+      result.reachable, set show_final_path = True, convert result.path (grid coordinates) to
+      world-space via [grid.cell_to_world_center(*c) for c in result.path], call
+      frog.set_path(world_path), switch to FOLLOWING. If not result.reachable, switch back to
+      IDLE instead (there is no path to follow) and keep showing an "unreachable" HUD message.
+    - FOLLOWING: call frog.follow_path(dt); once frog.is_path_complete(), switch to IDLE.
+- draw(screen):
+    - clear with COLOR_BG.
+    - compute revealed_cells = set(result.explored_order[:reveal_cursor]) if result else set().
+    - grid.draw(screen, tileset_or_none, revealed_cells, show_final_path, show_heatmap,
+      show_cost_labels, font) — exactly this signature, per grid.py's spec.
+    - frog.draw(screen).
+    - HUD: diagonal/heatmap/cost-label toggle states; once result exists and is reachable,
+      "Total Cost: {result.total_cost:.1f}"; if not reachable, "Target unreachable"; a small
+      legend (Grass=1, Mud=3, Water=5, Wall=impassable).
+- Handle settings.KEYBINDS["restart"] in any state: rebuild the grid, reset the frog to a start
+  cell, clear result/reveal_cursor/show_final_path, return to IDLE.
+
+Constraints:
+- No terrain/A*/movement algorithm code belongs here — if you find an `if terrain == ...` branch
+  or a heap/priority-queue here, move it to grid.py/pathfinding.py.
+- This file is the ONLY place that converts AStarResult.path (grid coordinates) into world-space
+  waypoints — no other file performs this conversion.
+
+Do not:
+- Add a menu, a scene-switch enum, or any Connect4/MCTS import.
+- Let the frog begin FOLLOWING before reveal_cursor has consumed the entire explored_order list.
+- Reference, import, or assume any Assignment 1 module.
+```
+
+---
+
+## 8. Edge cases
+
+| Case | Required behavior |
+|---|---|
+| Start equals goal | `path=[start]`, `total_cost=0`, `reachable=True`; frog performs no unnecessary movement |
+| Target on a wall | Rejected before `find_path` is ever called |
+| Target outside the grid | Rejected at the click-handling stage (`world_to_cell` result fails `in_bounds`) before `find_path` is called |
+| Target unreachable (sealed off) | `find_path` terminates normally with `reachable=False`; explored region still visualized via the reveal animation; no crash; state returns to `IDLE` after the reveal instead of proceeding to `FOLLOWING` |
+| Diagonal disabled | Path uses only 4-directional steps; heuristic uses Manhattan distance |
+| Diagonal enabled | Path may use 8-directional steps; heuristic uses octile distance; corner-cutting rule (§4.4) enforced |
+| Blocked diagonal corner | Diagonal transition rejected per the exact boolean rule in §4.4 |
+| Repeated target (same cell clicked twice) | `grid.reset_search_state()` runs before every new search — no stale `explored`/`g_cost`/`in_path` bleeds from a previous run |
+| Empty path (`reachable=False`) | Handled explicitly — see "Target unreachable" row above |
+| One-cell path (start == goal) | Handled explicitly — see "Start equals goal" row above |
+| Very high `FROG_SPEED` / large `dt` spike crossing multiple waypoints in one frame | Handled by the bounded loop in §6.2 — leftover distance carries through consecutive waypoints within the same `follow_path(dt)` call |
+| Right-click during `REVEALING` | Ignored — only `IDLE` accepts right-clicks |
+| Right-click during `FOLLOWING` | Ignored — only `IDLE` accepts right-clicks |
+| Restart during any state | Clears grid, frog path, `result`, `reveal_cursor`, `show_final_path`; returns cleanly to `IDLE` |
+
+---
+
+## 9. Testing checklist
+
+### A* correctness
+- [ ] start == goal returns immediately, cost 0, single-point path, no heap loop needed
+- [ ] direct unobstructed path is a straight line at minimal cost
+- [ ] weighted terrain: a mud/water patch causes a visible detour when cheaper than crossing it
+- [ ] diagonal disabled uses only 4-directional steps; diagonal enabled uses 8-directional steps
+- [ ] diagonal corner-cutting is rejected at a concave wall corner (verify by hand-deriving that cell's would-be g-cost)
+- [ ] target unreachable: `reachable=False`, no crash, explored region still populated
+- [ ] target on a wall is rejected before `find_path` runs at all
+- [ ] boundary cells (`col=0`, `row=0`, `col=GRID_COLS-1`, `row=GRID_ROWS-1`) produce no out-of-bounds errors
+- [ ] repeated runs on the same grid/start/goal/diagonal-flag produce an identical path (determinism)
+- [ ] `AStarResult.path` is always `list[tuple[int,int]]` (grid coordinates) — verify no float/pixel values ever appear in it
+- [ ] `total_cost` matches a hand-computed sum on a small (e.g. 4x4) fixed-layout grid
+- [ ] `g(start) = 0`; `g(neighbor) = g(current) + movement_cost(current, neighbor)` for several sampled cells
+- [ ] a node's `Cell.g_cost`/`Cell.explored` are set only once, at finalization — confirm by checking a cell that was relaxed more than once before being popped still ends with the correct, final (lowest) `g_cost`
+
+### Visualization
+- [ ] immediately after `find_path()` returns, `revealed_cells` (main.py's, at `reveal_cursor=0`) is empty even though every explored `Cell.explored` is already `True` — confirms the reveal doesn't leak the whole result instantly
+- [ ] the number of cells actually drawn as "explored" each frame during `REVEALING` matches `len(revealed_cells)`, growing by `REVEAL_CELLS_PER_FRAME` per frame
+- [ ] the green final path is never drawn while `show_final_path` is `False`
+- [ ] the green final path appears at the exact frame `reveal_cursor` reaches `len(explored_order)`
+- [ ] cost labels shown per cell match that cell's `g_cost` exactly
+- [ ] toggling heatmap/cost-labels mid-`REVEALING` or mid-`FOLLOWING` does not corrupt `result` or the reveal progress
+
+### Frog
+- [ ] no teleportation — position changes continuously frame to frame except the deliberate snap-onto-waypoint case
+- [ ] velocity is computed via the explicit Seek formula every frame (verify by logging `velocity` and confirming it always points directly at the current waypoint at full `FROG_SPEED` magnitude, never smoothed)
+- [ ] no drift — frog's position never leaves the straight segment between its current and next waypoint
+- [ ] no waypoint skipping — every path cell is visited in order
+- [ ] overshoot-safe: an artificially large `dt` (simulating a frame hitch) never causes the frog to pass beyond a waypoint before snapping onto it, and correctly carries leftover distance into subsequent segments within the same call
+- [ ] frog stops exactly on the final waypoint; `is_path_complete()` becomes `True` at that moment
+- [ ] facing direction (`angle`) updates correctly as the frog turns at each waypoint
+
+### State / input
+- [ ] right-clicks are accepted only in `IDLE`; ignored during `REVEALING`/`FOLLOWING`
+- [ ] invalid targets (wall, out-of-bounds, unreachable) are all rejected with the correct corresponding behavior from §8
+- [ ] restart clears grid, frog, result, reveal_cursor, and show_final_path cleanly from any state
+- [ ] `IDLE → REVEALING → FOLLOWING → IDLE` transitions occur exactly per the table in §5.3, with no skipped or extra transitions
+
+---
+
+## 10. Final Acceptance Checklist
+
+### Specification compliance
+- [ ] Right-click runs A* from the frog's current position to the clicked cell
+- [ ] Final path is rendered in green, only after the reveal completes
+- [ ] Diagonal (8-directional) neighbors are supported and toggleable
+- [ ] Frog moves via an explicit Seek steering computation, never teleports between cells
+- [ ] Clear, tested "reached waypoint" logic exists (§6.2)
+- [ ] Corner collisions are prevented at the pathfinding level (§4.4), not patched at the movement level
+- [ ] All explored cells are shown, with their `g_cost`, progressively, before the frog starts moving
+- [ ] Total path cost is displayed
+
+### Coordinate-system discipline
+- [ ] `AStarResult.path` and `explored_order` are `list[tuple[int,int]]` grid coordinates everywhere, with no exceptions
+- [ ] World-space conversion happens only in `main.py`, only at the `REVEALING → FOLLOWING` transition
+- [ ] `pathfinding.py` contains no pygame import and no world-space coordinate anywhere in its public API
+
+### Algorithm correctness
+- [ ] Heuristic is `MIN_TERRAIN_COST * (octile or manhattan)`, never a bare unscaled distance, never inflated by `w > 1`
+- [ ] Diagonal cost is `terrain_cost(destination) * sqrt(2)`
+- [ ] Stale heap entries are correctly detected and discarded via the `best_g` comparison at pop time
+- [ ] `Cell.g_cost`/`Cell.explored` are written only once, at finalization — never during relaxation
+- [ ] Unreachable targets are handled without crashing
+
+### Visualization correctness
+- [ ] `grid.draw()` renders explored/reveal state from the `revealed_cells` set it is given, never from `cell.explored` directly
+- [ ] `grid.draw()` renders the final path only when `show_final_path` is `True`, never from `cell.in_path` directly
+
+### Frog / steering correctness
+- [ ] Seek formula (`desired_velocity - velocity`, applied with no force limit) is implemented exactly as specified
+- [ ] No `MAX_FORCE`/`SLOW_RADIUS`/`PREDICT_DIST`/`PATH_RADIUS` constant or logic exists anywhere in the project
+- [ ] Overshoot handling uses a bounded loop, never recursion
+
+### Independence from Assignment 1
+- [ ] No file imports, references, or assumes any Assignment 1 code, class, or asset
+- [ ] The project runs standalone via `python main.py` from an otherwise-empty `a2_part1/` directory
+
+### Edge cases & testing
+- [ ] Every row of §8 handled and tested
+- [ ] Every checkbox in §9 has been manually run at least once
+
+### Submission hygiene
+- [ ] No Connect4/MCTS/menu code anywhere under `a2_part1/`
+- [ ] No Assignment 1 files, imports, or assets anywhere in the submitted tree
+- [ ] Any previous/obsolete Part 1 attempt removed or clearly archived outside the submission zip
+</file>
+
+<file path="frog.py">
+from __future__ import annotations
+
+import math
+from pathlib import Path
+
+import pygame
+
+from settings import FROG_SPEED, TILE_SIZE
+
+
+class Frog:
+    def __init__(self, x, y, sprite_path=None):
+        self.pos = pygame.Vector2(x, y)
+        self.velocity = pygame.Vector2(0, 0)
+        self.path: list[pygame.Vector2] = []
+        self.path_index = 0
+        self.angle = 0.0
+        self.sprite = self._load_sprite(sprite_path)
+
+    def _load_sprite(self, sprite_path):
+        if sprite_path is None:
+            return None
+        try:
+            path = Path(sprite_path)
+            if not path.exists():
+                return None
+            sprite = pygame.image.load(str(path)).convert_alpha()
+            max_size = int(TILE_SIZE * 0.72)
+            sprite = pygame.transform.smoothscale(sprite, (max_size, max_size))
+            return sprite
+        except Exception:
+            return None
+
+    def set_path(self, world_points: list[tuple[float, float]]) -> None:
+        self.path = [pygame.Vector2(point) for point in world_points]
+        self.path_index = 0
+        self.velocity = pygame.Vector2(0, 0)
+
+    def follow_path(self, dt: float) -> None:
+        if not self.path or self.is_path_complete():
+            self.velocity.update(0, 0)
+            return
+
+        remaining_distance = max(0.0, FROG_SPEED * dt)
+        if remaining_distance == 0.0:
+            return
+
+        for _ in range(len(self.path) + 1):
+            if self.path_index >= len(self.path):
+                self.velocity.update(0, 0)
+                return
+
+            target = self.path[self.path_index]
+            offset = target - self.pos
+            dist_to_target = offset.length()
+
+            if dist_to_target > 0.0:
+                desired_velocity = offset.normalize() * FROG_SPEED
+                self.velocity = desired_velocity
+                self.angle = math.degrees(math.atan2(-self.velocity.y, self.velocity.x))
+            else:
+                self.velocity.update(0, 0)
+
+            if dist_to_target <= remaining_distance:
+                self.pos = target.copy()
+                remaining_distance -= dist_to_target
+                if self.path_index < len(self.path) - 1:
+                    self.path_index += 1
+                    continue
+                self.velocity.update(0, 0)
+                remaining_distance = 0.0
+                return
+
+            if dist_to_target > 0.0:
+                self.pos += self.velocity.normalize() * remaining_distance
+            remaining_distance = 0.0
+            return
+
+        self.velocity.update(0, 0)
+
+    def is_path_complete(self) -> bool:
+        if not self.path:
+            return True
+        if self.path_index < len(self.path) - 1:
+            return False
+        return self.pos.distance_to(self.path[-1]) <= 0.5
+
+    def draw(self, surface) -> None:
+        if self.sprite is not None:
+            rotated = pygame.transform.rotate(self.sprite, self.angle)
+            rect = rotated.get_rect(center=(int(self.pos.x), int(self.pos.y)))
+            surface.blit(rotated, rect)
+            return
+
+        center = (int(self.pos.x), int(self.pos.y))
+        pygame.draw.circle(surface, (73, 190, 80), center, int(TILE_SIZE * 0.22))
+        if self.velocity.length_squared() > 0.0:
+            direction = self.velocity.normalize() * (TILE_SIZE * 0.28)
+            end_point = (int(self.pos.x + direction.x), int(self.pos.y + direction.y))
+            pygame.draw.line(surface, (220, 255, 220), center, end_point, 3)
+</file>
+
+<file path="grid.py">
+from __future__ import annotations
+
+import math
+import random
+from collections import deque
+
+import pygame
+
+from settings import COLOR_EXPLORED, COLOR_FRONTIER, COLOR_PATH, TERRAIN_COLOR, TERRAIN_COST, TILE_SIZE, Terrain
+
+
+class Cell:
+    __slots__ = ("col", "row", "terrain", "g_cost", "explored", "in_path")
+
+    def __init__(self, col: int, row: int, terrain: str):
+        self.col = col
+        self.row = row
+        self.terrain = terrain
+        self.g_cost = None
+        self.explored = False
+        self.in_path = False
+
+
+class TerrainGrid:
+    def __init__(self, cols: int, rows: int, layout: list[str] | None = None, seed: int = 7):
+        self.cols = cols
+        self.rows = rows
+        self.start_cell: tuple[int, int] | None = None
+        self.goal_cell: tuple[int, int] | None = None
+        self.final_path: list[tuple[int, int]] = []
+        self._reachable: set[tuple[int, int]] = set()
+        self._rng = random.Random(seed)
+        self.cells = self._build_cells(layout)
+
+    def _build_cells(self, layout: list[str] | None) -> list[list[Cell]]:
+        cells: list[list[Cell]] = []
+        if layout is not None:
+            if len(layout) != self.rows:
+                raise ValueError("layout row count does not match grid rows")
+            for row_index, row_text in enumerate(layout):
+                if len(row_text) != self.cols:
+                    raise ValueError("layout column count does not match grid cols")
+                row_cells: list[Cell] = []
+                for col_index, char in enumerate(row_text):
+                    terrain = self._terrain_from_layout_char(char)
+                    row_cells.append(Cell(col_index, row_index, terrain))
+                cells.append(row_cells)
+            return cells
+
+        for row_index in range(self.rows):
+            row_cells = []
+            for col_index in range(self.cols):
+                roll = self._rng.random()
+                if roll < 0.08:
+                    terrain = Terrain.WALL
+                elif roll < 0.23:
+                    terrain = Terrain.WATER
+                elif roll < 0.40:
+                    terrain = Terrain.MUD
+                else:
+                    terrain = Terrain.GRASS
+                row_cells.append(Cell(col_index, row_index, terrain))
+            cells.append(row_cells)
+
+        for _ in range(3):
+            self._stamp_blob(cells, Terrain.MUD, radius=2)
+            self._stamp_blob(cells, Terrain.WATER, radius=2)
+        return cells
+
+    def _stamp_blob(self, cells: list[list[Cell]], terrain: str, radius: int) -> None:
+        center_col = self._rng.randrange(self.cols)
+        center_row = self._rng.randrange(self.rows)
+        for row_index in range(max(0, center_row - radius), min(self.rows, center_row + radius + 1)):
+            for col_index in range(max(0, center_col - radius), min(self.cols, center_col + radius + 1)):
+                if self._rng.random() < 0.55:
+                    cells[row_index][col_index].terrain = terrain
+
+    @staticmethod
+    def _terrain_from_layout_char(char: str) -> str:
+        if char == ".":
+            return Terrain.GRASS
+        if char == "m":
+            return Terrain.MUD
+        if char == "w":
+            return Terrain.WATER
+        if char == "#":
+            return Terrain.WALL
+        raise ValueError(f"unknown terrain layout character: {char!r}")
+
+    def set_start_cell(self, col: int, row: int) -> None:
+        self.start_cell = (col, row)
+        self._reachable = self._flood_fill(col, row)
+
+    def _flood_fill(self, start_col: int, start_row: int) -> set[tuple[int, int]]:
+        if not self.in_bounds(start_col, start_row):
+            return set()
+        if self.cost(start_col, start_row) == float("inf"):
+            return set()
+
+        reachable: set[tuple[int, int]] = set()
+        queue = deque([(start_col, start_row)])
+        reachable.add((start_col, start_row))
+
+        while queue:
+            col, row = queue.popleft()
+            for next_col, next_row in self.neighbors(col, row, allow_diagonal=False):
+                if (next_col, next_row) not in reachable and self.cost(next_col, next_row) != float("inf"):
+                    reachable.add((next_col, next_row))
+                    queue.append((next_col, next_row))
+
+        return reachable
+
+    def is_reachable(self, col: int, row: int) -> bool:
+        return (col, row) in self._reachable
+
+    def in_bounds(self, col: int, row: int) -> bool:
+        return 0 <= col < self.cols and 0 <= row < self.rows
+
+    def get_cell(self, col: int, row: int) -> Cell | None:
+        if not self.in_bounds(col, row):
+            return None
+        return self.cells[row][col]
+
+    def cost(self, col: int, row: int) -> float:
+        cell = self.get_cell(col, row)
+        if cell is None:
+            return float("inf")
+        return TERRAIN_COST[cell.terrain]
+
+    def neighbors(self, col: int, row: int, allow_diagonal: bool) -> list[tuple[int, int]]:
+        result: list[tuple[int, int]] = []
+        cardinal_offsets = [(0, -1), (1, 0), (0, 1), (-1, 0)]
+        for delta_col, delta_row in cardinal_offsets:
+            next_col = col + delta_col
+            next_row = row + delta_row
+            if self.in_bounds(next_col, next_row) and self.cost(next_col, next_row) != float("inf"):
+                result.append((next_col, next_row))
+
+        if not allow_diagonal:
+            return result
+
+        diagonal_offsets = [(-1, -1), (1, -1), (1, 1), (-1, 1)]
+        for delta_col, delta_row in diagonal_offsets:
+            next_col = col + delta_col
+            next_row = row + delta_row
+            orthogonal_a = (col + delta_col, row)
+            orthogonal_b = (col, row + delta_row)
+            if not self.in_bounds(next_col, next_row):
+                continue
+            if self.cost(next_col, next_row) == float("inf"):
+                continue
+            if self.cost(*orthogonal_a) == float("inf") or self.cost(*orthogonal_b) == float("inf"):
+                continue
+            result.append((next_col, next_row))
+
+        return result
+
+    def movement_cost(self, from_cell: Cell, to_cell: Cell) -> float:
+        diagonal = from_cell.col != to_cell.col and from_cell.row != to_cell.row
+        multiplier = math.sqrt(2) if diagonal else 1.0
+        return TERRAIN_COST[to_cell.terrain] * multiplier
+
+    def reset_search_state(self) -> None:
+        self.final_path = []
+        for row_cells in self.cells:
+            for cell in row_cells:
+                cell.g_cost = None
+                cell.explored = False
+                cell.in_path = False
+
+    def world_to_cell(self, x: float, y: float) -> tuple[int, int]:
+        return int(x // TILE_SIZE), int(y // TILE_SIZE)
+
+    def cell_to_world_center(self, col: int, row: int) -> tuple[float, float]:
+        return col * TILE_SIZE + TILE_SIZE / 2.0, row * TILE_SIZE + TILE_SIZE / 2.0
+
+    def draw(
+        self,
+        surface: pygame.Surface,
+        tileset_or_none: pygame.Surface | None,
+        revealed_cells: set[tuple[int, int]],
+        show_final_path: bool,
+        show_heatmap: bool,
+        show_cost_labels: bool,
+        font: pygame.font.Font,
+    ) -> None:
+        for row_cells in self.cells:
+            for cell in row_cells:
+                rect = pygame.Rect(cell.col * TILE_SIZE, cell.row * TILE_SIZE, TILE_SIZE, TILE_SIZE)
+                self._draw_base_tile(surface, rect, cell.terrain, tileset_or_none)
+
+                if show_heatmap and cell.terrain != Terrain.WALL:
+                    heat_color = self._heat_color_for_terrain(cell.terrain)
+                    overlay = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
+                    overlay.fill((*heat_color, 72))
+                    surface.blit(overlay, rect.topleft)
+
+                if (cell.col, cell.row) in revealed_cells:
+                    overlay = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
+                    overlay.fill((*COLOR_EXPLORED, 72))
+                    surface.blit(overlay, rect.topleft)
+                    pygame.draw.rect(surface, COLOR_FRONTIER, rect, 1)
+
+                    if show_cost_labels and cell.g_cost is not None:
+                        label = font.render(f"{cell.g_cost:.2f}", True, (255, 255, 255))
+                        label_rect = label.get_rect(center=rect.center)
+                        shadow = font.render(f"{cell.g_cost:.2f}", True, (0, 0, 0))
+                        shadow_rect = shadow.get_rect(center=(rect.centerx + 1, rect.centery + 1))
+                        surface.blit(shadow, shadow_rect)
+                        surface.blit(label, label_rect)
+
+                if show_final_path and cell.in_path:
+                    overlay = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
+                    overlay.fill((*COLOR_PATH, 112))
+                    surface.blit(overlay, rect.topleft)
+
+        if show_final_path:
+            path_points = [self.cell_to_world_center(col, row) for col, row in self.final_path]
+            if len(path_points) >= 2:
+                pygame.draw.lines(surface, COLOR_PATH, False, path_points, 4)
+
+        if self.start_cell is not None:
+            self._draw_marker(surface, self.start_cell, (80, 220, 255), 10)
+        if self.goal_cell is not None:
+            self._draw_marker(surface, self.goal_cell, (255, 90, 90), 10)
+
+    def _draw_base_tile(
+        self,
+        surface: pygame.Surface,
+        rect: pygame.Rect,
+        terrain: str,
+        tileset_or_none: pygame.Surface | None,
+    ) -> None:
+        if tileset_or_none is not None and tileset_or_none.get_width() >= 4:
+            try:
+                tile_width = tileset_or_none.get_width() // 4
+                source_rect = pygame.Rect(self._terrain_to_tileset_index(terrain) * tile_width, 0, tile_width, tileset_or_none.get_height())
+                tile = tileset_or_none.subsurface(source_rect)
+                scaled = pygame.transform.smoothscale(tile, (TILE_SIZE, TILE_SIZE))
+                surface.blit(scaled, rect.topleft)
+                return
+            except pygame.error:
+                pass
+
+        pygame.draw.rect(surface, TERRAIN_COLOR[terrain], rect)
+
+    @staticmethod
+    def _terrain_to_tileset_index(terrain: str) -> int:
+        mapping = {
+            Terrain.GRASS: 0,
+            Terrain.MUD: 1,
+            Terrain.WATER: 2,
+            Terrain.WALL: 3,
+        }
+        return mapping[terrain]
+
+    @staticmethod
+    def _heat_color_for_terrain(terrain: str) -> tuple[int, int, int]:
+        mapping = {
+            Terrain.GRASS: (74, 180, 92),
+            Terrain.MUD: (182, 117, 52),
+            Terrain.WATER: (80, 132, 227),
+            Terrain.WALL: (0, 0, 0),
+        }
+        return mapping[terrain]
+
+    def _draw_marker(self, surface: pygame.Surface, cell_coord: tuple[int, int], color: tuple[int, int, int], radius: int) -> None:
+        center = self.cell_to_world_center(*cell_coord)
+        pygame.draw.circle(surface, (20, 20, 20), (int(center[0]), int(center[1])), radius + 2)
+        pygame.draw.circle(surface, color, (int(center[0]), int(center[1])), radius)
+</file>
+
+<file path="main.py">
+from __future__ import annotations
+
+import pygame
+
+from frog import Frog
+from grid import TerrainGrid
+from pathfinding import AStarResult, find_path
+from settings import (
+    COLOR_BG,
+    COLOR_TEXT,
+    FONT_SIZE,
+    FPS,
+    FROG_SPRITE,
+    GRID_COLS,
+    GRID_ROWS,
+    KEYBINDS,
+    REVEAL_CELLS_PER_FRAME,
+    SCREEN_HEIGHT,
+    SCREEN_WIDTH,
+    TILESET,
+)
+
+
+IDLE = "idle"
+REVEALING = "revealing"
+FOLLOWING = "following"
+
+
+def build_demo_layout() -> list[str]:
+    rows = [["." for _ in range(GRID_COLS)] for _ in range(GRID_ROWS)]
+
+    for row_index in range(1, 4):
+        for col_index in range(2, 6):
+            rows[row_index][col_index] = "m"
+
+    for row_index in range(8, 12):
+        for col_index in range(12, 17):
+            rows[row_index][col_index] = "m"
+
+    for row_index in range(4, 7):
+        for col_index in range(7, 14):
+            rows[row_index][col_index] = "w"
+
+    for row_index in range(0, 11):
+        if row_index != 5:
+            rows[row_index][10] = "#"
+
+    for row_index in range(10, 13):
+        rows[row_index][15] = "#"
+        rows[row_index][16] = "#"
+
+    for col_index in range(0, 4):
+        rows[7][col_index] = "w"
+
+    rows[1][1] = "."
+    rows[1][2] = "."
+    rows[2][1] = "."
+    rows[2][2] = "."
+
+    return ["".join(row) for row in rows]
+
+
+def build_grid() -> TerrainGrid:
+    layout = build_demo_layout()
+    grid = TerrainGrid(GRID_COLS, GRID_ROWS, layout=layout)
+    grid.set_start_cell(0, 0)
+    return grid
+
+
+def load_surface(path):
+    try:
+        if path.exists():
+            return pygame.image.load(str(path)).convert_alpha()
+    except Exception as exc:
+        print(f"Failed to load {path.name}: {exc}")
+    return None
+
+
+def main() -> int:
+    pygame.init()
+    screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+    pygame.display.set_caption("A* over a weighted-cost grid")
+    clock = pygame.time.Clock()
+    font = pygame.font.Font(None, FONT_SIZE)
+
+    frog_sprite = load_surface(FROG_SPRITE)
+    tileset = load_surface(TILESET)
+    use_sprites = frog_sprite is not None and tileset is not None
+    if not use_sprites:
+        print("Running with fallback drawing because sprite assets could not be loaded.")
+        frog_sprite = None
+        tileset = None
+
+    grid = build_grid()
+    start_cell = (0, 0)
+    start_center = grid.cell_to_world_center(*start_cell)
+    frog = Frog(*start_center, sprite_path=FROG_SPRITE if frog_sprite is not None else None)
+
+    state = IDLE
+    result: AStarResult | None = None
+    reveal_cursor = 0
+    show_final_path = False
+    allow_diagonal = True
+    show_heatmap = False
+    show_cost_labels = True
+    hud_message = ""
+    hud_message_time = 0.0
+    goal_cell: tuple[int, int] | None = None
+
+    grid.goal_cell = None
+
+    def reset_world() -> None:
+        nonlocal grid, frog, state, result, reveal_cursor, show_final_path, goal_cell, hud_message, hud_message_time
+        nonlocal start_cell
+        grid = build_grid()
+        start_cell = (0, 0)
+        grid.goal_cell = None
+        grid.set_start_cell(*start_cell)
+        frog.pos = pygame.Vector2(*grid.cell_to_world_center(*start_cell))
+        frog.velocity.update(0, 0)
+        frog.set_path([])
+        state = IDLE
+        result = None
+        reveal_cursor = 0
+        show_final_path = False
+        goal_cell = None
+        hud_message = ""
+        hud_message_time = 0.0
+
+    def set_message(text: str, duration: float = 1.5) -> None:
+        nonlocal hud_message, hud_message_time
+        hud_message = text
+        hud_message_time = duration
+
+    def handle_right_click(mouse_pos: tuple[int, int]) -> None:
+        nonlocal state, result, reveal_cursor, show_final_path, goal_cell, start_cell
+        if state != IDLE:
+            return
+
+        start_cell = grid.world_to_cell(frog.pos.x, frog.pos.y)
+        grid.set_start_cell(*start_cell)
+
+        col, row = grid.world_to_cell(*mouse_pos)
+        if not grid.in_bounds(col, row):
+            set_message("Target outside the grid")
+            return
+        if grid.cost(col, row) == float("inf"):
+            set_message("Target is a wall")
+            return
+        if not grid.is_reachable(col, row):
+            set_message("Target unreachable from the frog", duration=2.5)
+            return
+
+        goal_cell = (col, row)
+        grid.goal_cell = goal_cell
+        grid.reset_search_state()
+        result = find_path(grid, start_cell, goal_cell, allow_diagonal)
+        reveal_cursor = 0
+        show_final_path = False
+        state = REVEALING
+        if not result.reachable:
+            set_message("Target unreachable", duration=2.5)
+
+    def update(dt: float) -> None:
+        nonlocal state, reveal_cursor, show_final_path, result, hud_message_time, hud_message, start_cell
+        if hud_message_time > 0.0:
+            hud_message_time = max(0.0, hud_message_time - dt)
+            if hud_message_time == 0.0:
+                hud_message = ""
+
+        if state == REVEALING and result is not None:
+            reveal_cursor = min(reveal_cursor + REVEAL_CELLS_PER_FRAME, len(result.explored_order))
+            if reveal_cursor >= len(result.explored_order):
+                if result.reachable:
+                    show_final_path = True
+                    world_path = [grid.cell_to_world_center(*cell) for cell in result.path]
+                    frog.set_path(world_path)
+                    state = FOLLOWING
+                else:
+                    state = IDLE
+            return
+
+        if state == FOLLOWING:
+            frog.follow_path(dt)
+            if frog.is_path_complete():
+                start_cell = grid.world_to_cell(frog.pos.x, frog.pos.y)
+                grid.set_start_cell(*start_cell)
+                state = IDLE
+
+    def draw() -> None:
+        screen.fill(COLOR_BG)
+        revealed_cells = set(result.explored_order[:reveal_cursor]) if result is not None else set()
+        grid.draw(screen, tileset, revealed_cells, show_final_path, show_heatmap, show_cost_labels, font)
+        frog.draw(screen)
+
+        y = GRID_ROWS * 48 + 10
+        lines = [
+            f"Diagonal: {'ON' if allow_diagonal else 'OFF'}   Heatmap: {'ON' if show_heatmap else 'OFF'}   Cost Labels: {'ON' if show_cost_labels else 'OFF'}",
+            "Right-click a reachable non-wall cell to run cost-weighted A*.",
+            "Legend: Grass=1  Mud=3  Water=5  Wall=impassable",
+        ]
+        if result is not None and result.reachable:
+            lines.insert(1, f"Total Cost: {result.total_cost:.1f}")
+        elif result is not None and not result.reachable:
+            lines.insert(1, "Target unreachable")
+        if hud_message:
+            lines.insert(0, hud_message)
+
+        for line in lines:
+            label = font.render(line, True, COLOR_TEXT)
+            screen.blit(label, (12, y))
+            y += 22
+
+        pygame.display.flip()
+
+    running = True
+    while running:
+        dt = clock.tick(FPS) / 1000.0
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    running = False
+                elif event.key == getattr(pygame, f"K_{KEYBINDS['toggle_diagonal']}"):
+                    allow_diagonal = not allow_diagonal
+                elif event.key == getattr(pygame, f"K_{KEYBINDS['toggle_heatmap']}"):
+                    show_heatmap = not show_heatmap
+                elif event.key == getattr(pygame, f"K_{KEYBINDS['toggle_cost_labels']}"):
+                    show_cost_labels = not show_cost_labels
+                elif event.key == getattr(pygame, f"K_{KEYBINDS['restart']}"):
+                    reset_world()
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
+                handle_right_click(event.pos)
+
+        update(dt)
+        draw()
+
+    pygame.quit()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+</file>
+
+<file path="pathfinding.py">
+from __future__ import annotations
+
+import heapq
+import math
+from dataclasses import dataclass
+
+from settings import MIN_TERRAIN_COST
+
+
+@dataclass
+class AStarResult:
+    path: list[tuple[int, int]]
+    total_cost: float
+    explored_order: list[tuple[int, int]]
+    reachable: bool
+
+
+def _manhattan(current: tuple[int, int], goal: tuple[int, int]) -> float:
+    dx = abs(goal[0] - current[0])
+    dy = abs(goal[1] - current[1])
+    return float(dx + dy)
+
+
+def _octile(current: tuple[int, int], goal: tuple[int, int]) -> float:
+    dx = abs(goal[0] - current[0])
+    dy = abs(goal[1] - current[1])
+    return float((dx + dy) + (math.sqrt(2) - 2.0) * min(dx, dy))
+
+
+def _heuristic(current: tuple[int, int], goal: tuple[int, int], allow_diagonal: bool) -> float:
+    distance = _octile(current, goal) if allow_diagonal else _manhattan(current, goal)
+    return MIN_TERRAIN_COST * distance
+
+
+def _reconstruct_path(came_from: dict[tuple[int, int], tuple[int, int]], goal: tuple[int, int], start: tuple[int, int]) -> list[tuple[int, int]]:
+    current = goal
+    path = [current]
+    while current != start:
+        current = came_from[current]
+        path.append(current)
+    path.reverse()
+    return path
+
+
+def find_path(grid, start: tuple[int, int], goal: tuple[int, int], allow_diagonal: bool) -> AStarResult:
+    start_cell = grid.get_cell(*start)
+    goal_cell = grid.get_cell(*goal)
+    if start_cell is None or goal_cell is None:
+        return AStarResult(path=[], total_cost=float("inf"), explored_order=[], reachable=False)
+
+    if start == goal:
+        start_cell.g_cost = 0.0
+        start_cell.explored = True
+        start_cell.in_path = True
+        grid.final_path = [start]
+        return AStarResult(path=[start], total_cost=0.0, explored_order=[start], reachable=True)
+
+    open_heap: list[tuple[float, int, float, int, int]] = []
+    tie_break = 0
+    best_g: dict[tuple[int, int], float] = {start: 0.0}
+    came_from: dict[tuple[int, int], tuple[int, int]] = {}
+    explored_order: list[tuple[int, int]] = []
+
+    start_f = _heuristic(start, goal, allow_diagonal)
+    heapq.heappush(open_heap, (start_f, tie_break, 0.0, start[0], start[1]))
+
+    while open_heap:
+        _, _, g, col, row = heapq.heappop(open_heap)
+        current = (col, row)
+        if g > best_g.get(current, float("inf")):
+            continue
+
+        cell = grid.get_cell(col, row)
+        if cell is None:
+            continue
+
+        cell.g_cost = g
+        cell.explored = True
+        explored_order.append(current)
+
+        if current == goal:
+            path = _reconstruct_path(came_from, goal, start)
+            grid.final_path = path
+            for path_col, path_row in path:
+                path_cell = grid.get_cell(path_col, path_row)
+                if path_cell is not None:
+                    path_cell.in_path = True
+            return AStarResult(path=path, total_cost=g, explored_order=explored_order, reachable=True)
+
+        for next_col, next_row in grid.neighbors(col, row, allow_diagonal):
+            next_cell = grid.get_cell(next_col, next_row)
+            if next_cell is None:
+                continue
+            tentative_g = g + grid.movement_cost(cell, next_cell)
+            neighbor = (next_col, next_row)
+            if tentative_g < best_g.get(neighbor, float("inf")):
+                best_g[neighbor] = tentative_g
+                came_from[neighbor] = current
+                tie_break += 1
+                f_score = tentative_g + _heuristic(neighbor, goal, allow_diagonal)
+                heapq.heappush(open_heap, (f_score, tie_break, tentative_g, next_col, next_row))
+
+    return AStarResult(path=[], total_cost=float("inf"), explored_order=explored_order, reachable=False)
+
+
+def path_cost_breakdown(grid, path: list[tuple[int, int]]) -> list[tuple[tuple[int, int], float, float]]:
+    breakdown: list[tuple[tuple[int, int], float, float]] = []
+    if not path:
+        return breakdown
+
+    cumulative_cost = 0.0
+    breakdown.append((path[0], 0.0, 0.0))
+    for previous, current in zip(path, path[1:]):
+        previous_cell = grid.get_cell(*previous)
+        current_cell = grid.get_cell(*current)
+        if previous_cell is None or current_cell is None:
+            step_cost = float("inf")
+        else:
+            step_cost = grid.movement_cost(previous_cell, current_cell)
+        cumulative_cost += step_cost
+        breakdown.append((current, step_cost, cumulative_cost))
+    return breakdown
+</file>
+
+<file path="README.md">
+# A2 Part 1
+
+Standalone demo: cost-weighted A* over a grid with reveal-before-move visualization and a frog that follows the final path using explicit Seek steering.
+
+## Run
+
+From inside `a2_part1/`:
+
+```bash
+python main.py
+```
+
+## Controls
+
+- Right-click: run A* to the clicked cell
+- `D`: toggle diagonal movement
+- `H`: toggle terrain heatmap
+- `C`: toggle per-cell cost labels
+- `R`: restart the map and frog
+
+The project uses standard A* over a weighted-cost grid. It does not implement formal Weighted A*.
+</file>
+
+<file path="settings.py">
+from pathlib import Path
+
+
+GRID_COLS = 20
+GRID_ROWS = 14
+TILE_SIZE = 48
+
+SCREEN_WIDTH = GRID_COLS * TILE_SIZE
+SCREEN_HEIGHT = GRID_ROWS * TILE_SIZE + 112
+FPS = 60
+
+
+class Terrain:
+    GRASS = "grass"
+    MUD = "mud"
+    WATER = "water"
+    WALL = "wall"
+
+
+TERRAIN_COST = {
+    Terrain.GRASS: 1,
+    Terrain.MUD: 3,
+    Terrain.WATER: 5,
+    Terrain.WALL: float("inf"),
+}
+
+MIN_TERRAIN_COST = min(value for value in TERRAIN_COST.values() if value != float("inf"))
+
+TERRAIN_COLOR = {
+    Terrain.GRASS: (66, 145, 73),
+    Terrain.MUD: (123, 85, 42),
+    Terrain.WATER: (56, 111, 184),
+    Terrain.WALL: (47, 49, 57),
+}
+
+FROG_SPEED = 220.0
+
+COLOR_EXPLORED = (90, 140, 255)
+COLOR_FRONTIER = (255, 200, 70)
+COLOR_PATH = (0, 230, 90)
+COLOR_TEXT = (240, 240, 240)
+COLOR_BG = (18, 20, 26)
+
+ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+FROG_SPRITE = ASSETS_DIR / "frog_sprite.png"
+TILESET = ASSETS_DIR / "tileset.png"
+
+REVEAL_CELLS_PER_FRAME = 5
+FONT_SIZE = 20
+
+KEYBINDS = {
+    "toggle_diagonal": "d",
+    "toggle_heatmap": "h",
+    "toggle_cost_labels": "c",
+    "restart": "r",
+}
+</file>
+
+</files>

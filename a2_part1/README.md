@@ -13,9 +13,11 @@ python main.py
 ## Controls
 
 - Right-click: run A* to the clicked cell
+- Left-click: toggle Wall/Grass on a cell (cannot place wall on frog cell)
 - `D`: toggle diagonal movement
 - `H`: toggle terrain heatmap
 - `C`: toggle per-cell cost labels
 - `R`: restart the map and frog
 
 The project uses standard A* over a weighted-cost grid. It does not implement formal Weighted A*.
+The HUD includes a dedicated path-cost panel with total cost, terrain-cell composition, and path length.

@@ -43,10 +43,16 @@ COLOR_BG = (18, 20, 26)
 
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 FROG_SPRITE = ASSETS_DIR / "frog_sprite.png"
-TILESET = ASSETS_DIR / "tileset.png"
+GRASS_TEXTURE = ASSETS_DIR / "tileset.png"
+MUD_TEXTURE = ASSETS_DIR / "mud.png"
+WATER_TEXTURE = ASSETS_DIR / "water.png"
+WALL_TEXTURE = ASSETS_DIR / "stone.png"
 
 REVEAL_CELLS_PER_FRAME = 5
 FONT_SIZE = 20
+
+COLOR_PANEL_BG = (12, 14, 18)
+COLOR_PANEL_BORDER = (88, 97, 116)
 
 KEYBINDS = {
     "toggle_diagonal": "d",
