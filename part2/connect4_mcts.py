@@ -21,6 +21,7 @@ import math
 import random
 import threading
 import os
+import array
 from math import log as _log, sqrt as _sqrt
 
 # ==========================================
@@ -89,28 +90,49 @@ RADIUS_SM   = 8     # rounded.md — small chips/buttons
 RADIUS_MD   = 12    # rounded.lg — panels/cards
 RADIUS_PILL = 9999  # rounded.pill — badge chips
 
-WIDTH = COLS * SQUARESIZE
+# =============================================================
+# LAYOUT — board on the left, a tall info sidebar on the right.
+# All UI (status/win-banner, stats, all-moves-considered, debug
+# telemetry, keybind legend) lives in sidebar cards, each with its
+# own generous height and margin — nothing is crammed into thin
+# stacked CARDs anymore.
+# =============================================================
+
+BOARD_WIDTH  = COLS * SQUARESIZE      # board's own pixel width — use this,
+BOARD_HEIGHT = ROWS * SQUARESIZE      # never WIDTH, for board-only math
 FPS = 60
 
-BOARD_HEIGHT = ROWS * SQUARESIZE
-STATUS_BAND_HEIGHT    = 52
-STATS_BAND_HEIGHT     = 130
-EXPLANATION_BAND_HEIGHT = 32
-LEGEND_BAND_HEIGHT    = 68
-DEBUG_BAND_HEIGHT     = 150
+SIDEBAR_WIDTH  = 480
+SIDEBAR_MARGIN = 16      # edge margin AND gap between stacked cards
+SIDEBAR_X      = BOARD_WIDTH
 
-UI_REGION_HEIGHT = (STATUS_BAND_HEIGHT + STATS_BAND_HEIGHT
-                    + EXPLANATION_BAND_HEIGHT + LEGEND_BAND_HEIGHT
-                    + DEBUG_BAND_HEIGHT)
+# Inner content box every sidebar card draws inside — single source of
+# truth so no card can ever be wider than the sidebar or bleed onto the
+# board. This is the fix for panels previously spanning the full WIDTH.
+SIDEBAR_INNER_X     = SIDEBAR_X + SIDEBAR_MARGIN
+SIDEBAR_INNER_WIDTH = SIDEBAR_WIDTH - SIDEBAR_MARGIN * 2
 
-HEIGHT = BOARD_HEIGHT + UI_REGION_HEIGHT
-SIZE = (WIDTH, HEIGHT)
+# Fixed card heights — generous, not fitted to BOARD_HEIGHT. If content
+# ever feels tight, grow the relevant *_CARD_HEIGHT constant below rather
+# than shrinking fonts/padding.
+STATUS_CARD_HEIGHT = 138   # brand row / turn / AI-thinking+avatar / win banner
+STATS_CARD_HEIGHT  = 210   # per-column win-rate bar chart (extra room = no crowding)
+MOVES_CARD_HEIGHT  = 232   # "all moves considered" ranked list (header + 7 rows)
+DEBUG_CARD_HEIGHT  = 220   # debug telemetry (TAB) — space reserved even when hidden,
+                           # so the legend card below never jumps position
+LEGEND_CARD_HEIGHT = 100   # keybind legend
 
-STATUS_BAND_Y      = BOARD_HEIGHT
-STATS_BAND_Y       = STATUS_BAND_Y      + STATUS_BAND_HEIGHT
-EXPLANATION_BAND_Y = STATS_BAND_Y       + STATS_BAND_HEIGHT
-LEGEND_BAND_Y      = EXPLANATION_BAND_Y + EXPLANATION_BAND_HEIGHT
-DEBUG_BAND_Y       = LEGEND_BAND_Y      + LEGEND_BAND_HEIGHT
+STATUS_CARD_Y = SIDEBAR_MARGIN
+STATS_CARD_Y  = STATUS_CARD_Y + STATUS_CARD_HEIGHT + SIDEBAR_MARGIN
+MOVES_CARD_Y  = STATS_CARD_Y  + STATS_CARD_HEIGHT  + SIDEBAR_MARGIN
+DEBUG_CARD_Y  = MOVES_CARD_Y  + MOVES_CARD_HEIGHT  + SIDEBAR_MARGIN
+LEGEND_CARD_Y = DEBUG_CARD_Y  + DEBUG_CARD_HEIGHT  + SIDEBAR_MARGIN
+
+SIDEBAR_CONTENT_HEIGHT = LEGEND_CARD_Y + LEGEND_CARD_HEIGHT + SIDEBAR_MARGIN
+
+WIDTH  = BOARD_WIDTH + SIDEBAR_WIDTH               # TOTAL window width (menu spans this)
+HEIGHT = max(BOARD_HEIGHT, SIDEBAR_CONTENT_HEIGHT)  # taller of board vs. sidebar stack
+SIZE   = (WIDTH, HEIGHT)
 
 MCTS_EXPLORATION_C = 1.4
 
@@ -135,38 +157,34 @@ DROP_ANIMATION_MS       = 300
 
 ASSET_DIR = "assets"
 
-# Typography sizes — humanist sans for UI, serif for display title, mono for HUD
-FONT_SIZE_TITLE  = 48   # display — menu title (serif feel via Georgia fallback)
+# Single source of truth for the game's name — every window caption and
+# on-screen title string must reference this constant, never a separate
+# literal, so the name can never drift between screens.
+GAME_TITLE = "MCTS Connect 4"
+
+# Typography sizes — one consistent humanist-sans family is used for every
+# piece of UI text in the game (title, body, labels, legend, debug HUD).
+# Only size/weight vary — never family. See _make_font() below.
+FONT_SIZE_TITLE  = 48   # display — menu title
 FONT_SIZE_HEADER = 28   # display-sm / section headers
 FONT_SIZE_BODY   = 20   # body text, status strip
-FONT_SIZE_SMALL  = 16   # body-sm — stats labels, legend (bumped from 14)
+FONT_SIZE_SMALL  = 16   # body-sm — stats labels, legend, debug HUD
 
-def _make_font(size, bold=False, family="sans"):
-    """Safe font factory with fallback chain. Never crashes."""
-    if family == "serif":
-        # Display font: weight 400, never bold (Anthropic system rule)
+def _make_font(size, bold=False):
+    """
+    Safe font factory with fallback chain. Never crashes.
+    Single family for the whole game: Segoe UI → Verdana → arial.
+    (Debug-HUD lines don't rely on monospace alignment — each segment's
+    x-position already advances by its own rendered pixel width, so a
+    proportional font lays out correctly too.)
+    """
+    try:
+        return pygame.font.SysFont("Segoe UI", size, bold=bold)
+    except Exception:
         try:
-            return pygame.font.SysFont("Georgia", size, bold=False)
+            return pygame.font.SysFont("Verdana", size, bold=bold)
         except Exception:
-            return pygame.font.SysFont("Times New Roman", size, bold=False)
-    elif family == "mono":
-        for name in ("JetBrains Mono", "Consolas", "Courier New", "monospace"):
-            try:
-                f = pygame.font.SysFont(name, size, bold=bold)
-                if f:
-                    return f
-            except Exception:
-                continue
-        return pygame.font.SysFont(None, size, bold=bold)
-    else:
-        # Humanist sans: Segoe UI → Verdana → arial
-        try:
-            return pygame.font.SysFont("Segoe UI", size, bold=bold)
-        except Exception:
-            try:
-                return pygame.font.SysFont("Verdana", size, bold=bold)
-            except Exception:
-                return pygame.font.SysFont("arial", size, bold=bold)
+            return pygame.font.SysFont("arial", size, bold=bold)
 
 # =====================================================================
 # PROTECTED CORE — DO NOT MODIFY THE LOGIC BELOW.
@@ -410,6 +428,57 @@ def load_assets():
         except (pygame.error, FileNotFoundError, OSError):
             assets[slot] = None
     return assets
+
+def _make_landing_sound():
+    """
+    Synthesize a short percussive 'thud' entirely in-memory (16-bit stereo
+    PCM via the stdlib `array` module — no numpy, no external .wav file).
+    Returns None if the mixer isn't available; every call site must treat
+    None as a valid, silent no-op.
+    """
+    try:
+        if not pygame.mixer.get_init():
+            return None
+        sample_rate = 44100
+        duration_s  = 0.09
+        freq        = 150.0
+        n_samples   = int(sample_rate * duration_s)
+        amplitude   = 9000
+
+        buf = array.array("h")
+        for i in range(n_samples):
+            t = i / sample_rate
+            envelope = (1.0 - i / n_samples) ** 2       # fast decay = percussive
+            sample = int(amplitude * envelope * math.sin(2 * math.pi * freq * t))
+            buf.append(sample)   # left
+            buf.append(sample)   # right
+        return pygame.mixer.Sound(buffer=buf.tobytes())
+    except Exception:
+        return None
+
+
+def _make_win_sound():
+    """Short two-note rising chime for the win celebration. Same safe pattern."""
+    try:
+        if not pygame.mixer.get_init():
+            return None
+        sample_rate = 44100
+        amplitude   = 7000
+        notes       = [(523.25, 0.09), (784.0, 0.14)]   # C5 -> G5
+        buf = array.array("h")
+        for freq, dur in notes:
+            n = int(sample_rate * dur)
+            for i in range(n):
+                t = i / sample_rate
+                envelope = 1.0 - i / n
+                sample = int(amplitude * envelope * math.sin(2 * math.pi * freq * t))
+                buf.append(sample)
+                buf.append(sample)
+        return pygame.mixer.Sound(buffer=buf.tobytes())
+    except Exception:
+        return None
+
+
 
 
 # =====================================================================
@@ -741,6 +810,14 @@ def draw_board(screen, state, font, hint_col=None, message="",
             col_c, col_h, akey = PLAYER2_COLOR, PLAYER2_HIGHLIGHT, "player2"
         _draw_disc(screen, assets, akey, (center_x, current_y), col_c, col_h)
 
+        # Fire the landing effect exactly once, the frame the animation
+        # reaches its target — reads drop_animation only, never sets game
+        # state (winner/board are already decided elsewhere by this point).
+        if t >= 1.0 and not drop_animation.get("landed_effect_fired", False):
+            drop_animation["landed_effect_fired"] = True
+            _trigger_landing_effect(drop_animation["col"], drop_animation["row"],
+                                    drop_animation["player"])
+
     # Last-move indicator (thin ink ring, no pulse — distinct from winning highlight)
     if last_move is not None and (winning_cells is None or last_move not in winning_cells):
         r, c = last_move
@@ -799,6 +876,8 @@ selected_hvai_config_key = DEFAULT_AI_CONFIG_KEY
 # Purely cosmetic UI state — reset in reset_game_state()
 displayed_win_rates = {col: 0.0 for col in range(COLS)}
 win_particles       = []
+landing_particles   = []   # square burst fired when a disc lands
+_landing_sound      = None # set once in main(); safe no-op if mixer unavailable
 
 
 def handle_human_vs_ai_click(event):
@@ -813,8 +892,8 @@ def handle_human_vs_ai_click(event):
         return
 
     mouse_x, mouse_y = event.pos
-    if not (0 <= mouse_x < WIDTH and 0 <= mouse_y < BOARD_HEIGHT):
-        return  # click in UI band — ignore
+    if not (0 <= mouse_x < BOARD_WIDTH and 0 <= mouse_y < BOARD_HEIGHT):
+        return  # click in UI CARD — ignore
 
     col = mouse_x // SQUARESIZE
     if col not in state.get_legal_moves():
@@ -826,7 +905,8 @@ def handle_human_vs_ai_click(event):
 
     last_move = coord
     drop_animation = {"row": coord[0], "col": coord[1],
-                      "player": HUMAN_PLAYER, "start_ms": pygame.time.get_ticks()}
+                      "player": HUMAN_PLAYER, "start_ms": pygame.time.get_ticks(),
+                      "landed_effect_fired": False}
 
     result_winner = state.check_winner()
     if result_winner is not None:
@@ -930,7 +1010,8 @@ def apply_ai_result(best_move, stats, ucb, player):
         return
     last_move      = coord
     drop_animation = {"row": coord[0], "col": coord[1],
-                      "player": player, "start_ms": pygame.time.get_ticks()}
+                      "player": player, "start_ms": pygame.time.get_ticks(),
+                      "landed_effect_fired": False}
     explanation_text = _build_explanation_text(stats, best_move, ucb)
 
     result_winner = state.check_winner()
@@ -996,7 +1077,7 @@ def reset_game_state():
     global pending_pause_until_ms, last_ai_stats, last_chosen_move, chosen_ucb
     global last_search_iterations, last_search_duration_ms
     global drop_animation, thinking_started_ms, explanation_text
-    global displayed_win_rates, win_particles
+    global displayed_win_rates, win_particles, landing_particles
 
     state                   = Connect4State()
     game_over               = False
@@ -1018,6 +1099,7 @@ def reset_game_state():
     explanation_text        = ""
     displayed_win_rates     = {col: 0.0 for col in range(COLS)}
     win_particles           = []
+    landing_particles       = []
 
 
 AI_CONFIG_KEYS_ORDER = ["aggressive", "balanced", "cautious"]
@@ -1042,13 +1124,17 @@ def _trigger_win_particles():
     for _ in range(80):
         color = base_color if random.random() > 0.3 else hl_color
         win_particles.append({
-            "x":     random.uniform(WIDTH * 0.2, WIDTH * 0.8),
+            "x":     random.uniform(BOARD_WIDTH * 0.2, BOARD_WIDTH * 0.8),
             "y":     random.uniform(BOARD_HEIGHT * 0.1, BOARD_HEIGHT * 0.5),
             "vx":    random.uniform(-3.5, 3.5),
             "vy":    random.uniform(-7, 1.5),
             "color": color,
             "life":  random.randint(180, 255),
         })
+    if pygame.mixer.get_init():
+        win_sound = _make_win_sound()
+        if win_sound is not None:
+            win_sound.play()
 
 
 def _update_and_draw_particles(screen):
@@ -1062,6 +1148,59 @@ def _update_and_draw_particles(screen):
             pygame.draw.circle(surf, (*p["color"], max(0, p["life"])), (3, 3), 3)
             screen.blit(surf, (int(p["x"]), int(p["y"])))
     win_particles[:] = [p for p in win_particles if p["life"] > 0]
+
+
+def _trigger_landing_effect(col, row, player):
+    """
+    Fired exactly once per move, the instant a disc's drop animation
+    completes (see the landed_effect_fired check in draw_board). Spawns a
+    small square-particle burst at the landing point and plays a short
+    procedural 'thud' — purely cosmetic, reads player/col/row only, never
+    touches game state.
+    """
+    global landing_particles
+    cx = col * SQUARESIZE + SQUARESIZE // 2
+    cy = row * SQUARESIZE + SQUARESIZE // 2
+    base_color = PLAYER1_COLOR if player == PLAYER1 else PLAYER2_COLOR
+    hl_color   = PLAYER1_HIGHLIGHT if player == PLAYER1 else PLAYER2_HIGHLIGHT
+
+    for _ in range(14):
+        angle = random.uniform(0, math.pi)          # burst outward + slightly up
+        speed = random.uniform(1.5, 4.5)
+        landing_particles.append({
+            "x":     cx,
+            "y":     cy,
+            "vx":    math.cos(angle) * speed * random.choice([-1, 1]),
+            "vy":    -abs(math.sin(angle) * speed) - 1.0,
+            "size":  random.randint(4, 7),
+            "color": base_color if random.random() > 0.4 else hl_color,
+            "life":  random.randint(18, 32),
+            "rot":   random.uniform(0, 360),
+            "rot_v": random.uniform(-12, 12),
+        })
+
+    if _landing_sound is not None:
+        _landing_sound.play()
+
+
+def _update_and_draw_landing_particles(screen):
+    """Square, rotating, gravity-affected — visually distinct from the
+    round win-celebration particles so the two effects never look identical."""
+    for p in landing_particles:
+        p["vy"]  += 0.35
+        p["x"]   += p["vx"]
+        p["y"]   += p["vy"]
+        p["rot"] += p["rot_v"]
+        p["life"] -= 1
+        if p["life"] > 0:
+            s = p["size"]
+            surf = pygame.Surface((s, s), pygame.SRCALPHA)
+            alpha = max(0, min(255, p["life"] * 8))
+            pygame.draw.rect(surf, (*p["color"], alpha), (0, 0, s, s), border_radius=1)
+            rotated = pygame.transform.rotate(surf, p["rot"])
+            rect = rotated.get_rect(center=(int(p["x"]), int(p["y"])))
+            screen.blit(rotated, rect)
+    landing_particles[:] = [p for p in landing_particles if p["life"] > 0]
 
 
 # ============================================================
@@ -1097,82 +1236,188 @@ def _pill_badge(screen, font, text, center, active=False):
 
 # ----- MENU -----
 
-def draw_menu(screen, fonts, assets, hvai_key, ai1_key, ai2_key):
+def draw_menu(screen, fonts, assets, hvai_key, ai1_key, ai2_key, mouse_pos=None):
+    """
+    Fully mouse-operable menu: hover any tag/button and it highlights in
+    color before you click; click a difficulty tag to select it; click PLAY
+    to enter that mode. Keyboard shortcuts still work as a fallback (see
+    handle_menu_keydown) but are no longer required for anything.
+    """
+    if mouse_pos is None:
+        mouse_pos = pygame.mouse.get_pos()
+
     screen.fill(BG_COLOR)
     title_font, header_font, body_font, small_font = fonts
 
-    # Optional menu background image (Prompt 4: wired in)
     if assets and assets.get("menu_background"):
         screen.blit(assets["menu_background"], (0, 0))
 
-    # Hero title — ink on cream, weight 400 (no bold per Anthropic system)
-    title_surf = title_font.render("MCTS Connect 4", True, TEXT_COLOR)
-    title_rect = title_surf.get_rect(center=(WIDTH // 2, 72))
-    screen.blit(title_surf, title_rect)
+    L = _menu_layout(fonts)
 
-    # Thin coral underline accent beneath title
-    ul_y = title_rect.bottom + 6
+    title_surf = title_font.render(GAME_TITLE, True, TEXT_COLOR)
+    screen.blit(title_surf, L["title_rect"])
+
     pygame.draw.line(screen, PLAYER1_COLOR,
-                     (WIDTH // 2 - 120, ul_y), (WIDTH // 2 + 120, ul_y), 2)
+                     (WIDTH // 2 - 120, L["ul_y"]), (WIDTH // 2 + 120, L["ul_y"]), 2)
 
-    subtitle = small_font.render("Monte Carlo Tree Search · Part 2", True, TEXT_MUTED)
-    screen.blit(subtitle, subtitle.get_rect(center=(WIDTH // 2, ul_y + 16)))
+    subtitle = small_font.render("Monte Carlo Tree Search · Part 2 — click to choose",
+                                 True, TEXT_MUTED)
+    screen.blit(subtitle, subtitle.get_rect(center=(WIDTH // 2, L["ul_y"] + 16)))
 
     PAD = 24
-    card_top = ul_y + 44
-    card_h   = 220
-    half_w   = WIDTH // 2 - 40
+    card1, card2 = L["card1"], L["card2"]
 
     # ---- Human vs AI card ----
-    card1 = pygame.Rect(20, card_top, half_w, card_h)
-    _panel(screen, card1, border=PLAYER1_COLOR, border_w=2)
+    card1_hover = card1.collidepoint(mouse_pos)
+    _panel(screen, card1, border=ACCENT_COLOR if card1_hover else PLAYER1_COLOR,
+          border_w=2)
 
     screen.blit(header_font.render("Human vs AI", True, TEXT_COLOR),
                 (card1.x + PAD, card1.y + PAD))
-    hotkey = small_font.render("[1]", True, PLAYER1_COLOR)
-    screen.blit(hotkey, (card1.right - PAD - hotkey.get_width(), card1.y + PAD + 4))
 
-    screen.blit(small_font.render("Difficulty  ←/→", True, TEXT_MUTED),
+    screen.blit(small_font.render("Difficulty — click a tag", True, TEXT_MUTED),
                 (card1.x + PAD, card1.y + 72))
-    pill_y = card1.y + 108
-    pill_x = card1.x + PAD
-    for key in AI_CONFIG_KEYS_ORDER:
-        _pill_badge(screen, small_font, AI_CONFIGS[key]["name"],
-                    (pill_x + 48, pill_y), active=(hvai_key == key))
-        pill_x += 100
+    for key, rect in L["hvai_tags"]:
+        _tag_button(screen, small_font, AI_CONFIGS[key]["name"], rect,
+                   active=(hvai_key == key), hover=rect.collidepoint(mouse_pos))
 
     desc = small_font.render(AI_CONFIGS[hvai_key]["desc"], True, TEXT_MUTED)
-    screen.blit(desc, (card1.x + PAD, card1.y + 148))
+    screen.blit(desc, (card1.x + PAD, card1.y + 140))
+
+    play1_hover = L["play1"].collidepoint(mouse_pos)
+    _tag_button(screen, header_font, "▶  PLAY  HUMAN vs AI", L["play1"],
+               active=play1_hover, hover=play1_hover)
 
     # ---- AI vs AI card ----
-    card2 = pygame.Rect(WIDTH // 2 + 20, card_top, half_w, card_h)
-    _panel(screen, card2, border=PLAYER1_COLOR, border_w=2)
+    card2_hover = card2.collidepoint(mouse_pos)
+    _panel(screen, card2, border=ACCENT_COLOR if card2_hover else PLAYER1_COLOR,
+          border_w=2)
 
     screen.blit(header_font.render("AI vs AI", True, TEXT_COLOR),
                 (card2.x + PAD, card2.y + PAD))
-    hotkey2 = small_font.render("[2]", True, PLAYER1_COLOR)
-    screen.blit(hotkey2, (card2.right - PAD - hotkey2.get_width(), card2.y + PAD + 4))
 
-    screen.blit(small_font.render("P1  A/D", True, TEXT_MUTED),
-                (card2.x + PAD, card2.y + 72))
-    px = card2.x + PAD + 60
-    for key in AI_CONFIG_KEYS_ORDER:
-        _pill_badge(screen, small_font, key[:3].capitalize(),
-                    (px, card2.y + 80), active=(ai1_key == key))
-        px += 68
+    screen.blit(small_font.render("P1", True, PLAYER1_COLOR),
+                (card2.x + PAD, card2.y + 80))
+    for key, rect in L["ai1_tags"]:
+        _tag_button(screen, small_font, key[:3].capitalize(), rect,
+                   active=(ai1_key == key), hover=rect.collidepoint(mouse_pos))
 
-    screen.blit(small_font.render("P2  J/L", True, TEXT_MUTED),
-                (card2.x + PAD, card2.y + 130))
-    px = card2.x + PAD + 60
-    for key in AI_CONFIG_KEYS_ORDER:
-        _pill_badge(screen, small_font, key[:3].capitalize(),
-                    (px, card2.y + 138), active=(ai2_key == key))
-        px += 68
+    screen.blit(small_font.render("P2", True, PLAYER2_COLOR),
+                (card2.x + PAD, card2.y + 136))
+    for key, rect in L["ai2_tags"]:
+        _tag_button(screen, small_font, key[:3].capitalize(), rect,
+                   active=(ai2_key == key), hover=rect.collidepoint(mouse_pos))
+
+    play2_hover = L["play2"].collidepoint(mouse_pos)
+    _tag_button(screen, header_font, "▶  PLAY  AI vs AI", L["play2"],
+               active=play2_hover, hover=play2_hover)
 
     # Footer
     esc = small_font.render("Esc — quit", True, TEXT_MUTED)
     screen.blit(esc, esc.get_rect(center=(WIDTH // 2, card1.bottom + 28)))
 
+def _menu_layout(fonts):
+    """
+    Computes every menu rect ONCE, in one place. draw_menu() uses it to know
+    where to paint; handle_menu_click()/hover logic uses the exact same rects
+    to know where to hit-test. This guarantees a click always lands exactly
+    where the pixels visually are — no drift between rendering and input.
+    """
+    title_font, header_font, body_font, small_font = fonts
+    title_surf = title_font.render(GAME_TITLE, True, TEXT_COLOR)
+    title_rect = title_surf.get_rect(center=(WIDTH // 2, 72))
+    ul_y = title_rect.bottom + 6
+
+    PAD      = 24
+    card_top = ul_y + 44
+    card_h   = 260
+    half_w   = WIDTH // 2 - 40
+
+    card1 = pygame.Rect(20, card_top, half_w, card_h)               # Human vs AI
+    card2 = pygame.Rect(WIDTH // 2 + 20, card_top, half_w, card_h)  # AI vs AI
+
+    def row_of_tags(card, y, count, tag_w, gap, start_x=None):
+        rects = []
+        x = card.x + PAD if start_x is None else start_x
+        for _ in range(count):
+            rects.append(pygame.Rect(x, y, tag_w, 32))
+            x += tag_w + gap
+        return rects
+
+    hvai_tag_rects = row_of_tags(card1, card1.y + 96, len(AI_CONFIG_KEYS_ORDER),
+                                 tag_w=112, gap=8)
+    ai1_tag_rects  = row_of_tags(card2, card2.y + 74,  len(AI_CONFIG_KEYS_ORDER),
+                                 tag_w=72, gap=6, start_x=card2.x + PAD + 58)
+    ai2_tag_rects  = row_of_tags(card2, card2.y + 130, len(AI_CONFIG_KEYS_ORDER),
+                                 tag_w=72, gap=6, start_x=card2.x + PAD + 58)
+
+    play1_rect = pygame.Rect(card1.x + PAD, card1.bottom - PAD - 44,
+                             card1.width - PAD * 2, 44)
+    play2_rect = pygame.Rect(card2.x + PAD, card2.bottom - PAD - 44,
+                             card2.width - PAD * 2, 44)
+
+    return {
+        "title_rect": title_rect, "ul_y": ul_y,
+        "card1": card1, "card2": card2,
+        "hvai_tags": list(zip(AI_CONFIG_KEYS_ORDER, hvai_tag_rects)),
+        "ai1_tags":  list(zip(AI_CONFIG_KEYS_ORDER, ai1_tag_rects)),
+        "ai2_tags":  list(zip(AI_CONFIG_KEYS_ORDER, ai2_tag_rects)),
+        "play1": play1_rect, "play2": play2_rect,
+    }
+
+
+def _tag_button(screen, font, text, rect, active=False, hover=False):
+    """
+    A clickable, hoverable tag/button:
+    - active  -> filled coral, cream text (this IS the current selection)
+    - hover   -> light fill + coral border (mouse is over it right now)
+    - neither -> flat card fill, muted text (available, not selected)
+    This is the ONLY visual language the menu needs — no keyboard hints
+    required to understand what's selectable or selected.
+    """
+    if active:
+        fill, border, txt_color = PLAYER1_COLOR, PLAYER1_COLOR, TEXT_ON_DARK
+    elif hover:
+        fill, border, txt_color = PANEL_HAIRLINE, PLAYER1_COLOR, TEXT_COLOR
+    else:
+        fill, border, txt_color = PANEL_CARD_COLOR, PANEL_HAIRLINE, TEXT_MUTED
+
+    pygame.draw.rect(screen, fill, rect, border_radius=RADIUS_SM)
+    pygame.draw.rect(screen, border, rect,
+                     width=2 if (active or hover) else 1, border_radius=RADIUS_SM)
+    surf = font.render(text, True, txt_color)
+    screen.blit(surf, surf.get_rect(center=rect.center))
+
+def handle_menu_click(event, hvai_key, ai1_key, ai2_key, fonts):
+    """
+    Mouse-only menu control. Uses the exact same _menu_layout() rects that
+    draw_menu() just painted, so a click always matches what's on screen.
+    Returns (mode, hvai_key, ai1_key, ai2_key) — mode stays MENU unless a
+    PLAY button was clicked.
+    """
+    mode = GameMode.MENU
+    if event.type != pygame.MOUSEBUTTONDOWN or event.button != 1:
+        return mode, hvai_key, ai1_key, ai2_key
+
+    L = _menu_layout(fonts)
+    pos = event.pos
+
+    for key, rect in L["hvai_tags"]:
+        if rect.collidepoint(pos):
+            return mode, key, ai1_key, ai2_key
+    for key, rect in L["ai1_tags"]:
+        if rect.collidepoint(pos):
+            return mode, hvai_key, key, ai2_key
+    for key, rect in L["ai2_tags"]:
+        if rect.collidepoint(pos):
+            return mode, hvai_key, ai1_key, key
+
+    if L["play1"].collidepoint(pos):
+        mode = GameMode.HUMAN_VS_AI
+    elif L["play2"].collidepoint(pos):
+        mode = GameMode.AI_VS_AI
+
+    return mode, hvai_key, ai1_key, ai2_key
 
 def handle_menu_keydown(event, hvai_key, ai1_key, ai2_key):
     """Logic unchanged — only styling is different. Returns (mode, hvai, ai1, ai2)."""
@@ -1214,19 +1459,23 @@ def get_status_text():
 
 def draw_stats_panel(screen, font, stats, chosen_move):
     """
-    Live bar chart of MCTS win rates and visits per column.
+    Live bar chart of MCTS win rates and visits per column, drawn INSIDE the
+    sidebar's STATS card only (never spans the board or the whole window).
     All numbers come directly from the `stats` dict — no recomputation.
     """
     FH = font.get_height()
-    LABEL_GAP = 4                            # px between label baselines
-    FOOTER_H  = FH * 2 + LABEL_GAP * 3 + 4  # reserved footer: pct + visits + col-idx
-    BAR_AREA_H = STATS_BAND_HEIGHT - FOOTER_H - 14  # space for bars above footer
+    LABEL_GAP = 4                             # px between label baselines
 
-    panel_rect = pygame.Rect(10, STATS_BAND_Y + 4, WIDTH - 20, STATS_BAND_HEIGHT - 8)
+    panel_rect = pygame.Rect(SIDEBAR_INNER_X, STATS_CARD_Y,
+                             SIDEBAR_INNER_WIDTH, STATS_CARD_HEIGHT)
     _panel(screen, panel_rect)
 
-    col_width = WIDTH // COLS
-    x0 = 0
+    header = font.render("Win rate by column", True, TEXT_MUTED)
+    screen.blit(header, (panel_rect.x + 14, panel_rect.y + 10))
+
+    chart_top = panel_rect.y + 10 + FH + 8   # below the header label
+    col_width = SIDEBAR_INNER_WIDTH // COLS
+    x0 = panel_rect.x
 
     for col in range(COLS):
         entry = stats.get(col, {"visits": 0, "win_rate": 0.0, "ucb": None})
@@ -1238,16 +1487,11 @@ def draw_stats_panel(screen, font, stats, chosen_move):
         displayed_win_rates[col] += (target_wr - displayed_win_rates[col]) * 0.18
 
         # Footer baseline positions (fixed, independent of bar height)
-        # Layout from bottom of STATS region upward:
-        #   col_idx_y  — column number (bottommost label)
-        #   visits_y   — visit count
-        #   pct_y      — win-rate percentage
-        region_bottom = STATS_BAND_Y + STATS_BAND_HEIGHT - 6
+        region_bottom = panel_rect.bottom - 8
         col_idx_y = region_bottom - FH
         visits_y  = col_idx_y  - FH - LABEL_GAP
         pct_y     = visits_y   - FH - LABEL_GAP
 
-        # Column index (always shown)
         idx_surf = font.render(str(col), True, TEXT_MUTED)
         screen.blit(idx_surf, (cx - idx_surf.get_width() // 2, col_idx_y))
 
@@ -1256,49 +1500,44 @@ def draw_stats_panel(screen, font, stats, chosen_move):
             screen.blit(un_surf, (cx - un_surf.get_width() // 2, visits_y))
             continue
 
-        # Bar — sits from top of bar-area down to pct_y, never into footer
-        bar_top    = STATS_BAND_Y + 10
+        bar_top    = chart_top
         bar_bottom = pct_y - LABEL_GAP
         bar_max_h  = max(1, bar_bottom - bar_top)
         bar_h      = max(3, int(bar_max_h * displayed_win_rates[col]))
         bar_y      = bar_bottom - bar_h
-        bar_w      = col_width - 20
-        bar_x      = col_x + 10
+        bar_w      = max(8, col_width - 16)
+        bar_x      = col_x + (col_width - bar_w) // 2
         bar_rect   = pygame.Rect(bar_x, bar_y, bar_w, bar_h)
 
         bar_color  = lerp_color(PLAYER1_COLOR, SUCCESS_COLOR, target_wr)
         pygame.draw.rect(screen, bar_color, bar_rect, border_radius=4)
 
         if col == chosen_move:
-            # Accent-teal outline — this is the sanctioned "chosen-column emphasis" role
             pygame.draw.rect(screen, ACCENT_COLOR, bar_rect.inflate(6, 6),
                              width=2, border_radius=6)
 
-        # Percentage label (fixed position — never overlaps bar or visits)
         pct_surf = font.render(f"{target_wr * 100:.0f}%", True, TEXT_COLOR)
         screen.blit(pct_surf, (cx - pct_surf.get_width() // 2, pct_y))
 
-        # Visits label
         vis_surf = font.render(f"{entry['visits']:,}", True, TEXT_MUTED)
         screen.blit(vis_surf, (cx - vis_surf.get_width() // 2, visits_y))
-
-
-# ----- DEBUG PANEL -----
-# BUG B FIX: single unified `y` cursor used for ALL lines; no hardcoded
-# line positions; line spacing = font.get_height() + LINE_GAP, always.
+    
 
 def draw_debug_panel(screen, mono_font, mode, now_ms):
+    """Sidebar-confined telemetry HUD. Space is reserved by DEBUG_CARD_HEIGHT
+    even when hidden (see draw_status_and_panels), so nothing else shifts
+    position when TAB toggles this on/off."""
     if not debug_visible:
         return
 
     FH = mono_font.get_height()
-    LINE_GAP = 5
+    LINE_GAP = 8   # generous — the "greater spacing" fix for the HUD
 
-    panel_rect = pygame.Rect(10, DEBUG_BAND_Y + 4, WIDTH - 20, DEBUG_BAND_HEIGHT - 8)
+    panel_rect = pygame.Rect(SIDEBAR_INNER_X, DEBUG_CARD_Y,
+                             SIDEBAR_INNER_WIDTH, DEBUG_CARD_HEIGHT)
     pygame.draw.rect(screen, DEBUG_BG_COLOR,  panel_rect, border_radius=RADIUS_MD)
     pygame.draw.rect(screen, PANEL_HAIRLINE,  panel_rect, width=1, border_radius=RADIUS_MD)
 
-    # Inner slightly lighter strip
     inner = panel_rect.inflate(-8, -8)
     pygame.draw.rect(screen, DEBUG_INNER_COLOR, inner, border_radius=RADIUS_SM)
 
@@ -1312,67 +1551,71 @@ def draw_debug_panel(screen, mono_font, mode, now_ms):
     ucb_str   = "inf" if ucb_val in (None, float("inf")) else f"{ucb_val:.3f}"
     ucb_color = TEXT_ON_DARK_SOFT if ucb_str == "inf" else ACCENT_COLOR
 
-    # All lines as (text_parts, colors) where text_parts is list of (str, color)
     def line(s, clr=None):
         return [(s, clr or TEXT_ON_DARK_SOFT)]
 
     telemetry_lines = [
-        line(f"[TELEMETRY]  Mode: {mode.upper()}  |  AI: {ai_name}",
-             TEXT_ON_DARK),
-        line(f"Iterations: {last_search_iterations}  |  Search time: {last_search_duration_ms:.0f} ms"),
-        line(f"Chosen col: {last_chosen_move}  |  "
-             f"P(win): {sel_entry['win_rate']*100:.1f}%  |  Visits: {sel_entry['visits']:,}"),
-        # UCB line — mixed colors
-        [("UCB: ", TEXT_ON_DARK_SOFT), (ucb_str, ucb_color),
-         (f"   Exploration C: {c_param}", TEXT_ON_DARK_SOFT)],
+        line(f"[TELEMETRY]  Mode: {mode.upper()}", TEXT_ON_DARK),
+        line(f"AI: {ai_name}   |   Exploration C: {c_param}"),
+        line(f"Iterations: {last_search_iterations}"),
+        line(f"Search time: {last_search_duration_ms:.0f} ms"),
+        line(f"Chosen column: {last_chosen_move}"),
+        line(f"P(win): {sel_entry['win_rate']*100:.1f}%   |   Visits: {sel_entry['visits']:,}"),
+        [("UCB: ", TEXT_ON_DARK_SOFT), (ucb_str, ucb_color)],
         line(f"Worker: {'RUNNING' if ai_thinking else 'IDLE'}",
              ACCENT_COLOR if ai_thinking else TEXT_ON_DARK_SOFT),
     ]
 
-    # Unified y cursor — every line advances by exactly (FH + LINE_GAP)
-    y = DEBUG_BAND_Y + 12
+    y = panel_rect.y + 14
+    x_left  = panel_rect.x + 16
+    x_right = panel_rect.right - 16
     for parts in telemetry_lines:
-        x = 20
+        x = x_left
         for text_str, color in parts:
             surf = mono_font.render(text_str, True, color)
             screen.blit(surf, (x, y))
             x += surf.get_width()
-        # Faint scanline separator — solid low-contrast RGB (no RGBA on non-SRCALPHA surface)
-        pygame.draw.line(screen, (55, 52, 46),
-                         (20, y + FH + 2), (WIDTH - 30, y + FH + 2))
-        y += FH + LINE_GAP  # SINGLE source of line advancement — BUG B fixed
+        pygame.draw.line(screen, (55, 52, 46), (x_left, y + FH + 3), (x_right, y + FH + 3))
+        y += FH + LINE_GAP  # single source of line advancement
 
 
 # ----- KEYBIND LEGEND -----
 
 def draw_keybind_legend(screen, font):
     FH = font.get_height()
-    panel_rect = pygame.Rect(10, LEGEND_BAND_Y + 4, WIDTH - 20, LEGEND_BAND_HEIGHT - 8)
+    panel_rect = pygame.Rect(SIDEBAR_INNER_X, LEGEND_CARD_Y,
+                             SIDEBAR_INNER_WIDTH, LEGEND_CARD_HEIGHT)
     _panel(screen, panel_rect)
 
-    binds = [("R", "Restart"), ("TAB", "Debug"), ("ESC", "Menu / Quit")]
-    cx = 28
-    center_y = LEGEND_BAND_Y + LEGEND_BAND_HEIGHT // 2
+    binds = [("R", "Restart"), ("TAB", "Debug"), ("ESC", "Menu")]
+    cx = panel_rect.x + 18
+    row_y = panel_rect.y + 24
     for key, action in binds:
-        _pill_badge(screen, font, key, (cx + 22, center_y), active=True)
+        _pill_badge(screen, font, key, (cx + 20, row_y), active=True)
         lbl = font.render(action, True, TEXT_MUTED)
-        screen.blit(lbl, (cx + 50, center_y - FH // 2))
-        cx += 170
+        screen.blit(lbl, (cx + 46, row_y - FH // 2))
+        cx += (SIDEBAR_INNER_WIDTH - 36) // len(binds)
 
-    # Right-aligned mode hint
-    hint = font.render("1 Human vs AI   2 AI vs AI", True, TEXT_MUTED)
-    screen.blit(hint, (WIDTH - hint.get_width() - 16, center_y - FH // 2))
-
-
-# ----- CONSOLIDATED PANEL DRAW -----
+    hint = font.render("Esc to return to menu", True, TEXT_MUTED)
+    screen.blit(hint, (panel_rect.x + 18, panel_rect.bottom - FH - 14))
+    
 
 def draw_status_and_panels(screen, fonts, mono_font, assets, mode, now_ms):
-    """assets param added for Prompt 4: ai_alpha/ai_beta avatar wiring."""
+    """
+    Draws the entire right-hand sidebar as five independent, non-overlapping
+    cards (status, stats, moves, debug, legend), each confined to
+    SIDEBAR_INNER_X / SIDEBAR_INNER_WIDTH and its own fixed *_CARD_Y slot.
+    Nothing here ever draws on top of the board or on top of another card.
+    """
     title_font, header_font, body_font, small_font = fonts
 
-    # STATUS BAND — cream card on cream canvas, 1px hairline border
-    status_rect = pygame.Rect(10, STATUS_BAND_Y + 4, WIDTH - 20, STATUS_BAND_HEIGHT - 8)
+    # ---- STATUS CARD: brand row + turn/thinking/win state + explanation ----
+    status_rect = pygame.Rect(SIDEBAR_INNER_X, STATUS_CARD_Y,
+                              SIDEBAR_INNER_WIDTH, STATUS_CARD_HEIGHT)
     _panel(screen, status_rect)
+
+    brand_surf = small_font.render(GAME_TITLE.upper(), True, TEXT_MUTED)
+    screen.blit(brand_surf, (status_rect.x + 16, status_rect.y + 10))
 
     status_text = get_status_text()
     if game_over and winner is None:
@@ -1382,35 +1625,77 @@ def draw_status_and_panels(screen, fonts, mono_font, assets, mode, now_ms):
     else:
         status_color = TEXT_COLOR
 
+    status_y = status_rect.y + 10 + brand_surf.get_height() + 8
     screen.blit(body_font.render(status_text, True, status_color),
-                (26, STATUS_BAND_Y + 14))
+                (status_rect.x + 16, status_y))
 
     if ai_thinking:
         dots = "." * ((now_ms // 300) % 4)
-        thinking_surf = body_font.render(f"AI Thinking{dots}", True, ACCENT_COLOR)
-        # ai_alpha/ai_beta avatar: blit 32x32 icon next to the thinking indicator
+        thinking_surf = small_font.render(f"AI thinking{dots}", True, ACCENT_COLOR)
         avatar_key = "ai_alpha" if mode == GameMode.HUMAN_VS_AI else (
             "ai_alpha" if state.current_player == PLAYER1 else "ai_beta")
         avatar_img = assets.get(avatar_key) if assets else None
-        think_x = WIDTH - thinking_surf.get_width() - 20
+        think_y = status_y + body_font.get_height() + 10
+        think_x = status_rect.x + 16
         if avatar_img is not None:
-            avatar_x = think_x - 36
-            avatar_y = STATUS_BAND_Y + STATUS_BAND_HEIGHT // 2 - 16
-            screen.blit(avatar_img, (avatar_x, avatar_y))
-        screen.blit(thinking_surf, (think_x, STATUS_BAND_Y + 14))
+            screen.blit(avatar_img, (think_x, think_y - 4))
+            think_x += 40
+        screen.blit(thinking_surf, (think_x, think_y))
 
-    draw_stats_panel(screen, small_font, last_ai_stats, last_chosen_move)
-
-    # EXPLANATION BAND
-    exp_rect = pygame.Rect(10, EXPLANATION_BAND_Y + 2, WIDTH - 20,
-                           EXPLANATION_BAND_HEIGHT - 4)
-    _panel(screen, exp_rect)
     exp_color = WARNING_COLOR if explanation_text.startswith("WARNING") else TEXT_MUTED
-    screen.blit(small_font.render(explanation_text, True, exp_color),
-                (20, EXPLANATION_BAND_Y + 8))
+    exp_surf = small_font.render(explanation_text, True, exp_color)
+    screen.blit(exp_surf, (status_rect.x + 16, status_rect.bottom - exp_surf.get_height() - 10))
 
-    draw_keybind_legend(screen, small_font)
+    # ---- Remaining sidebar cards — each fully self-contained ----
+    draw_stats_panel(screen, small_font, last_ai_stats, last_chosen_move)
+    draw_moves_panel(screen, small_font, last_ai_stats, last_chosen_move)
     draw_debug_panel(screen, mono_font, mode, now_ms)
+    draw_keybind_legend(screen, small_font)
+
+def draw_moves_panel(screen, font, stats, chosen_move):
+    """
+    Ranked list of every column MCTS actually considered, sorted by visit
+    count (highest first) — a second, list-form view onto the exact same
+    `stats` dict draw_stats_panel() uses. No new numbers are computed here.
+    """
+    panel_rect = pygame.Rect(SIDEBAR_INNER_X, MOVES_CARD_Y,
+                             SIDEBAR_INNER_WIDTH, MOVES_CARD_HEIGHT)
+    _panel(screen, panel_rect)
+
+    FH = font.get_height()
+    header = font.render("All moves considered", True, TEXT_MUTED)
+    screen.blit(header, (panel_rect.x + 14, panel_rect.y + 10))
+
+    row_h = (panel_rect.height - (FH + 20)) // COLS
+    row_y = panel_rect.y + FH + 20
+
+    ranked = sorted(range(COLS),
+                    key=lambda c: stats.get(c, {"visits": 0})["visits"],
+                    reverse=True)
+
+    for col in ranked:
+        entry = stats.get(col, {"visits": 0, "win_rate": 0.0, "ucb": None})
+        row_rect = pygame.Rect(panel_rect.x + 10, row_y, panel_rect.width - 20, row_h - 4)
+
+        if col == chosen_move:
+            pygame.draw.rect(screen, ACCENT_COLOR, row_rect, width=2, border_radius=RADIUS_SM)
+
+        label = f"Col {col}"
+        if entry["visits"] == 0:
+            detail = "not explored"
+            color = TEXT_MUTED
+        else:
+            ucb_txt = "—" if entry.get("ucb") in (None, float("inf")) else f"{entry['ucb']:.4f}"
+            detail = f"{entry['win_rate']*100:.1f}% win   {entry['visits']:,} visits   UCB {ucb_txt}"
+            color = TEXT_COLOR
+
+        col_surf = font.render(label, True, color)
+        det_surf = font.render(detail, True, TEXT_MUTED if entry["visits"] else TEXT_MUTED)
+        text_y = row_rect.y + (row_rect.height - FH) // 2
+        screen.blit(col_surf, (row_rect.x + 10, text_y))
+        screen.blit(det_surf, (row_rect.x + 90, text_y))
+
+        row_y += row_h
 
 
 # ============================================================
@@ -1419,18 +1704,35 @@ def draw_status_and_panels(screen, fonts, mono_font, assets, mode, now_ms):
 
 def main():
     global selected_hvai_config_key, selected_ai_vs_ai_config_keys, debug_visible
+    global _landing_sound
+
+    # Mixer init is wrapped in try/except so a machine with no audio device
+    # (common on CI/grading VMs) degrades to a silent game, never a crash.
+    try:
+        pygame.mixer.pre_init(44100, -16, 2, 512)
+    except Exception:
+        pass
 
     pygame.init()
+
+    try:
+        if not pygame.mixer.get_init():
+            pygame.mixer.init(frequency=44100, size=-16, channels=2)
+    except Exception:
+        pass
+
+    _landing_sound = _make_landing_sound()  # None if mixer unavailable — fine
+
     screen = pygame.display.set_mode(SIZE)
-    pygame.display.set_caption("MCTS Connect 4")
+    pygame.display.set_caption(GAME_TITLE)
     clock = pygame.time.Clock()
 
     # Font stack — serif title, humanist sans body, mono HUD
-    title_font  = _make_font(FONT_SIZE_TITLE,  family="serif")
-    header_font = _make_font(FONT_SIZE_HEADER, family="sans",  bold=True)
-    body_font   = _make_font(FONT_SIZE_BODY,   family="sans")
-    small_font  = _make_font(FONT_SIZE_SMALL,  family="sans")
-    mono_font   = _make_font(FONT_SIZE_SMALL,  family="mono")
+    title_font  = _make_font(FONT_SIZE_TITLE)
+    header_font = _make_font(FONT_SIZE_HEADER, bold=True)
+    body_font   = _make_font(FONT_SIZE_BODY)
+    small_font  = _make_font(FONT_SIZE_SMALL)
+    mono_font   = _make_font(FONT_SIZE_SMALL)
 
     fonts = (title_font, header_font, body_font, small_font)
 
@@ -1470,11 +1772,23 @@ def main():
                         selected_ai_vs_ai_config_keys[PLAYER2] = ai2_key
                         reset_game_state()
 
+            elif event.type == pygame.MOUSEBUTTONDOWN and mode == GameMode.MENU:
+                new_mode, hvai_key, ai1_key, ai2_key = handle_menu_click(
+                    event, hvai_key, ai1_key, ai2_key, fonts)
+                if new_mode != GameMode.MENU:
+                    mode = new_mode
+                    selected_hvai_config_key        = hvai_key
+                    selected_ai_vs_ai_config_keys[PLAYER1] = ai1_key
+                    selected_ai_vs_ai_config_keys[PLAYER2] = ai2_key
+                    reset_game_state()
+
             elif mode == GameMode.HUMAN_VS_AI:
                 handle_human_vs_ai_click(event)
 
+        mouse_pos = pygame.mouse.get_pos()
+
         if mode == GameMode.MENU:
-            draw_menu(screen, fonts, assets, hvai_key, ai1_key, ai2_key)
+            draw_menu(screen, fonts, assets, hvai_key, ai1_key, ai2_key, mouse_pos)
         else:
             if mode == GameMode.HUMAN_VS_AI:
                 update_human_vs_ai_frame(now_ms)
@@ -1485,6 +1799,7 @@ def main():
                        winning_cells=winning_cells, last_move=last_move,
                        drop_animation=drop_animation, chosen_move=last_chosen_move)
             _update_and_draw_particles(screen)
+            _update_and_draw_landing_particles(screen)
             draw_status_and_panels(screen, fonts, mono_font, assets, mode, now_ms)
 
         pygame.display.flip()

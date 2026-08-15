@@ -1,4 +1,9 @@
 # Baseline snapshot — line 891 of connect4_mcts.py
+from connect4_mcts import game_over
+from connect4_mcts import drop_animation
+from connect4_mcts import winning_cells
+from connect4_mcts import last_ai_stats
+from connect4_mcts import last_move
 def apply_ai_result(best_move, stats, ucb, player):
     """Apply MCTS result to the live board on the MAIN THREAD only."""
     global last_move, winning_cells, drop_animation, game_over, winner
