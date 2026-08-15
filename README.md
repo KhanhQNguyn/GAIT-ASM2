@@ -1,4 +1,4 @@
-# How to Run — GAIT Assignment 2
+# How to Run - GAIT Assignment 2
 
 This document explains how to run both parts of the assignment: Part 1 (A* Pathfinding) and Part 2 (MCTS Connect4). They are two separate, independent programs and are run separately.
 
@@ -8,8 +8,8 @@ This document explains how to run both parts of the assignment: Part 1 (A* Pathf
 
 1. [Requirements](#1-requirements)
 2. [Project structure](#2-project-structure)
-3. [Part 1 — A* Pathfinding](#3-part-1--a-pathfinding)
-4. [Part 2 — MCTS Connect4](#4-part-2--mcts-connect4)
+3. [Part 1 - A* Pathfinding](#3-part-1--a-pathfinding)
+4. [Part 2 - MCTS Connect4](#4-part-2--mcts-connect4)
 5. [Troubleshooting](#5-troubleshooting)
 
 ---
@@ -39,7 +39,7 @@ No other third-party packages are required for either part.
 
 ```
 project-root/
-├── a2_part1/                  Part 1 — A* Pathfinding
+├── part1/                  Part 1 - A* Pathfinding
 │   ├── main.py                 entry point
 │   ├── grid.py
 │   ├── frog.py
@@ -48,7 +48,7 @@ project-root/
 │   ├── effects.py
 │   └── audio_fx.py
 │
-└── part2/                     Part 2 — MCTS Connect4
+└── part2/                     Part 2 - MCTS Connect4
     ├── connect4_mcts.py        entry point
     ├── assets/                 optional image/audio assets
     ├── audit_baseline/         reference copies of the core MCTS logic
@@ -59,7 +59,7 @@ Each part is self-contained within its own folder. Running either program requir
 
 ---
 
-## 3. Part 1 — A* Pathfinding
+## 3. Part 1 - A* Pathfinding
 
 ### 3.1 Run
 
@@ -87,7 +87,7 @@ Close the window, or press the standard window-close shortcut for the operating 
 
 ---
 
-## 4. Part 2 — MCTS Connect4
+## 4. Part 2 - MCTS Connect4
 
 ### 4.1 Run
 
@@ -100,8 +100,8 @@ python3 connect4_mcts.py
 
 The menu is mouse-driven. Hover over a difficulty tag to preview it, click a tag to select it, and click the corresponding PLAY button to start that mode.
 
-- **Human vs AI** — select a difficulty for the AI opponent, then click PLAY.
-- **AI vs AI** — select a difficulty for each side independently, then click PLAY.
+- **Human vs AI** - select a difficulty for the AI opponent, then click PLAY.
+- **AI vs AI** - select a difficulty for each side independently, then click PLAY.
 
 Keyboard shortcuts remain available as an alternative to the mouse (number keys and arrow keys for mode/difficulty selection), but are not required.
 
@@ -129,7 +129,7 @@ Run `pip install pygame` (or `pip3 install pygame`), then try again.
 Confirm the terminal/command window used to launch the script is not itself capturing keyboard focus; click directly on the game window first.
 
 **No sound is heard**
-Audio failures are handled silently by design — if the system has no available audio output device, the game continues to run without sound rather than crashing. This does not indicate a bug.
+Audio failures are handled silently by design - if the system has no available audio output device, the game continues to run without sound rather than crashing. This does not indicate a bug.
 
 **Script exits immediately with a traceback**
 Confirm the command is being run from inside the correct folder (`a2_part1` or `part2`), since both entry points rely on relative imports from their own folder.
